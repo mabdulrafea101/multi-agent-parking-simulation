@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Experiment History{% endblock %}
+{% block content %}
+<h1>Experiment History</h1>
+
+<div class="card">
+    <h2>Past Runs</h2>
+    <div style="overflow-x: auto;">
+    <table class="tooltip-table">
+        <thead>
+            <tr>
+                <th>
+                    Run ID
+                    <span class="tooltip-icon" data-tooltip="{{ tooltips.get('run_id', 'Unique experiment identifier assigned when the run was created.') }}">?</span>
+                </th>
+                <th>
+                    Date/Time (UTC)
+                </th>
+                <th>
+                    Scenario
+                    <span class="tooltip-icon" data-tooltip="{{ tooltips.get('scenario', '') }}">?</span>
+                </th>
+                <th>
+                    Strategy
+                    <span class="tooltip-icon" data-tooltip="{{ tooltips.get('strategy', '') }}">?</span>
+                </th>
+                <th>
+                    Replications
+                    <span class="tooltip-icon" data-tooltip="{{ tooltips.get('replication', '') }}">?</span>
+                </th>
+                <th>
+                    Total Runs
+                    <span class="tooltip-icon" data-tooltip="Total Runs | Number of scenario-strategy-replication combinations executed in this experiment.">?</span>
+                </th>
+                <th>
+                    Status
+                </th>
+                <th>
+                    Actions
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in runs %}
+            <tr>
+                <td>#{{ run.id }}</td>
+                <td>{{ run.run_at }}</td>
+                <td>{{ run.scenario or 'all' }}</td>
+                <td>{{ run.strategy or 'all' }}</td>
+                <td>{{ run.replications or '-' }}</td>
+                <td>{{ run.total_runs or run.rows_count }}</td>
+                    <td>
+                    <span class="status-badge status-{{ run.status }}">{{ run.status|capitalize }}</span>
+                    </td>
+                <td>
+                    <a href="{{ url_for('dashboard.history_run', run_id=run.id) }}" class="btn btn-primary">View Results</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8" style="text-align: center; color: #64748b;">No experiment history yet. Run an experiment first.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+{% if runs %}
+<div class="card">
+    <h2>Trend Overview (Latest Runs)</h2>
+    <p style="color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem;">
+        Bar charts summarize the latest saved experiment runs. Open a specific run above to inspect full tables and figures.
+    </p>
+    <div class="grid-3">
+        <div class="card" style="background: #111521;">
+            <h2 style="font-size: 1rem;">Mean RSR (latest run)</h2>
+            <canvas id="historyRsrChart" height="220"></canvas>
+        </div>
+        <div class="card" style="background: #111521;">
+            <h2 style="font-size: 1rem;">Mean PST (latest run)</h2>
+            <canvas id="historyPstChart" height="220"></canvas>
+        </div>
+        <div class="card" style="background: #111521;">
+            <h2 style="font-size: 1rem;">Mean POR (latest run)</h2>
+            <canvas id="historyPorChart" height="220"></canvas>
+        </div>
+        <div class="card" style="background: #111521;">
+            <h2 style="font-size: 1rem;">Mean Utility (latest run)</h2>
+            <canvas id="historyUtilityChart" height="220"></canvas>
+        </div>
+        <div class="card" style="background: #111521;">
+            <h2 style="font-size: 1rem;">Mean Total Arrivals (latest run)</h2>
+            <canvas id="historyArrivalsChart" height="220"></canvas>
+        </div>
+        <div class="card" style="background: #111521;">
+            <h2 style="font-size: 1rem;">Mean Total Successful (latest run)</h2>
+            <canvas id="historySuccessfulChart" height="220"></canvas>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+(function() {
+    const runs = {{ runs | tojson }};
+    if (!runs || !runs.length) return;
+
+    const colors = ['#2563eb', '#16a34a', '#f59e0b', '#ef4444', '#a855f7', '#06b6d4', '#f97316', '#14b8a6'];
+
+    function parseSummary(summaryJson, runId) {
+        if (!summaryJson) return [];
+        try {
+            const rows = JSON.parse(summaryJson);
+            return rows.map((row, idx) => ({ ...row, run_id: runId, color: colors[idx % colors.length] }));
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function labelFor(row) {
+        const scenario = row.scenario || '';
+        const strategy = row.strategy || '';
+        const runId = row.run_id;
+
+        if (scenario && strategy) {
+            return scenario + ' / ' + strategy;
+        }
+        if (scenario) return scenario;
+        if (strategy) return strategy;
+        /* Fallback: show experiment ID so labels are never blank */
+        return runId ? ('Run #' + runId) : 'Run';
+    }
+
+    function buildBar(canvasId, label, values, colorsList) {
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: values.map((_, i) => labelFor(values[i])),
+                datasets: [{
+                    label: label,
+                    data: values.map(v => v.value),
+                    backgroundColor: values.map(v => v.color || colorsList[0]),
+                    borderRadius: 4,
+                }],
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => label + ': ' + (typeof ctx.parsed.y === 'number' ? ctx.parsed.y.toFixed(2) : ctx.parsed.y),
+                        },
+                    },
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { color: '#94a3b8' },
+                        grid: { color: 'rgba(148,163,184,0.12)' },
+                    },
+                    x: {
+                        ticks: { color: '#94a3b8', maxRotation: 45, minRotation: 25 },
+                        grid: { display: false },
+                    },
+                },
+            },
+        });
+    }
+
+    const latest = runs[0];
+    const summaryRows = parseSummary(latest.summary_json || '[]', latest.id);
+    if (!summaryRows.length) return;
+
+    // Convert summary rows to chart data
+    const rsrValues = summaryRows.map(row => ({
+        value: parseFloat(row.mean_rsr || row.rsr || 0),
+        color: row.color,
+        scenario: row.scenario,
+        strategy: row.strategy,
+        run_id: row.run_id,
+    }));
+    const pstValues = summaryRows.map(row => ({
+        value: parseFloat(row.mean_mean_pst || row.mean_pst || 0),
+        color: row.color,
+        scenario: row.scenario,
+        strategy: row.strategy,
+        run_id: row.run_id,
+    }));
+    const porValues = summaryRows.map(row => ({
+        value: parseFloat(row.mean_std_por || row.mean_por || row.std_por || 0),
+        color: row.color,
+        scenario: row.scenario,
+        strategy: row.strategy,
+        run_id: row.run_id,
+    }));
+    const utilityValues = summaryRows.map(row => ({
+        value: parseFloat(row.mean_mean_utility || row.mean_utility || row.utility || 0),
+        color: row.color,
+        scenario: row.scenario,
+        strategy: row.strategy,
+        run_id: row.run_id,
+    }));
+    const arrivalsValues = summaryRows.map(row => ({
+        value: parseFloat(row.mean_total_arrivals || row.total_arrivals || 0),
+        color: row.color,
+        scenario: row.scenario,
+        strategy: row.strategy,
+        run_id: row.run_id,
+    }));
+    const successfulValues = summaryRows.map(row => ({
+        value: parseFloat(row.mean_total_successful || row.total_successful || 0),
+        color: row.color,
+        scenario: row.scenario,
+        strategy: row.strategy,
+        run_id: row.run_id,
+    }));
+
+    buildBar('historyRsrChart', 'Mean RSR (%)', rsrValues, colors);
+    buildBar('historyPstChart', 'Mean PST', pstValues, colors);
+    buildBar('historyPorChart', 'Mean POR', porValues, colors);
+    buildBar('historyUtilityChart', 'Mean Utility', utilityValues, colors);
+    buildBar('historyArrivalsChart', 'Mean Total Arrivals', arrivalsValues, colors);
+    buildBar('historySuccessfulChart', 'Mean Total Successful', successfulValues, colors);
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Parking Simulation{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="grid-3">
+    <div class="card stat-card">
+        <div class="value">
+            {% if state.status == 'running' %}
+                &hellip;
+            {% elif state.status == 'completed' %}
+                {{ state.completed_runs|default('0') }}
+            {% else %}
+                ---
+            {% endif %}
+        </div>
+        <div class="label">Experiment Runs</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value">
+            {% if state.status == 'completed' %}
+                &check;
+            {% elif state.status == 'error' %}
+                !
+            {% else %}
+                ---
+            {% endif %}
+        </div>
+        <div class="label">Status</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value">
+            {% if state.strategy %}{{ state.strategy }}{% else %}---{% endif %}
+        </div>
+        <div class="label">Last Strategy</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Experiment Status</h2>
+    <p>
+        Current state:
+        <span class="status-badge status-{{ state.status }}">{{ state.status|upper }}</span>
+    </p>
+
+    {% if state %}
+    <p style="margin-top: 0.75rem;">
+        Scenario: <strong>{{ state.scenario|default('All', true) }}</strong> &middot;
+        Strategy: <strong>{{ state.strategy|default('All', true) }}</strong> &middot;
+        Replications: <strong>{{ state.replications|default('N/A', true) }}</strong>
+    </p>
+    
+    <!-- Live progress bar (shown when running) -->
+    <div id="live-progress" style="display: none;">
+        <div class="progress-bar" style="margin-top: 1rem;">
+            <div class="fill" id="progress-fill" style="width: 0%"></div>
+        </div>
+        <p id="progress-text" style="font-size: 0.85rem; color: #64748b;">Loading...</p>
+    </div>
+    {% endif %}
+
+    <div class="form-actions" style="margin-top: 1.5rem;">
+        <a href="{{ url_for('dashboard.run_experiment') }}" class="btn btn-primary">Run New Experiment</a>
+        <a href="{{ url_for('dashboard.results') }}" class="btn btn-success">View Results</a>
+        {% if state.status in ('completed', 'error') %}
+        <form method="POST" action="{{ url_for('dashboard.reset') }}" style="display:inline;">
+            <button type="submit" class="btn btn-secondary">Reset</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+// Async live polling for experiment status - updates DOM without page reload
+async function updateExperimentStatus() {
+    try {
+        const response = await fetch('/progress.json');
+        const state = await response.json();
+        
+        // Update status badge
+        const statusBadge = document.querySelector('.status-badge');
+        if (statusBadge) {
+            statusBadge.className = 'status-badge status-' + state.status;
+            statusBadge.textContent = state.status.toUpperCase();
+        }
+        
+        // Update runs count and progress
+        const runsDiv = document.querySelector('.stat-card .value');
+        const progressDiv = document.getElementById('live-progress');
+        const progressFill = document.getElementById('progress-fill');
+        const progressText = document.getElementById('progress-text');
+        
+        const pct = state.total_runs > 0 
+            ? Math.round((state.completed_runs / state.total_runs) * 100) 
+            : 0;
+        
+        if (state.status === 'running') {
+            // Update runs count
+            if (runsDiv) {
+                runsDiv.textContent = state.completed_runs + ' / ' + state.total_runs + ' (' + pct + '%)';
+            }
+            // Show progress bar
+            if (progressDiv) progressDiv.style.display = 'block';
+            if (progressFill) progressFill.style.width = pct + '%';
+            if (progressText) progressText.textContent = 'Run ' + state.completed_runs + ' of ' + state.total_runs + ' (' + pct + '%)';
+            
+            // Poll again in 1 second
+            setTimeout(updateExperimentStatus, 1000);
+            
+        } else if (state.status === 'completed') {
+            // Hide progress bar
+            if (progressDiv) progressDiv.style.display = 'none';
+            // Update runs count to final value
+            if (runsDiv) {
+                runsDiv.textContent = state.completed_runs;
+            }
+            // Show completed checkmark
+            const statusDiv = document.querySelectorAll('.stat-card')[1];
+            if (statusDiv) {
+                const val = statusDiv.querySelector('.value');
+                if (val) val.innerHTML = '&#10003;';
+            }
+            // Poll less frequently for idle state
+            setTimeout(updateExperimentStatus, 3000);
+            
+        } else if (state.status === 'error') {
+            // Hide progress bar
+            if (progressDiv) progressDiv.style.display = 'none';
+            if (progressText) progressText.textContent = 'Error: ' + (state.error_message || 'Unknown error');
+            // Poll less frequently
+            setTimeout(updateExperimentStatus, 3000);
+            
+        } else {
+            // idle - poll less frequently
+            if (progressDiv) progressDiv.style.display = 'none';
+            setTimeout(updateExperimentStatus, 3000);
+        }
+    } catch (e) {
+        // On error, retry after 3 seconds
+        setTimeout(updateExperimentStatus, 3000);
+    }
+}
+
+// Start polling on page load
+updateExperimentStatus();
+</script>
+{% endblock %}

@@ -1,0 +1,33 @@
+{
+    "grid": {
+        "width": 100,
+        "height": 100,
+        "cell_size_meters": 10
+    },
+    "parking": {
+        "num_spots": 200,
+        "num_zones": 8,
+        "min_spots_per_zone": 10,
+        "max_spots_per_zone": 50,
+        "price_range": [1, 10],
+        "currency_unit": "sim_currency"
+    },
+    "demand": {
+        "arrival_rate_lambda": 5,
+        "parking_duration_mean_ticks": 50,
+        "parking_duration_std_ticks": 15,
+        "search_radius_cells": 15,
+        "max_search_duration_ticks": 30
+    },
+    "simulation": {
+        "total_ticks": 500,
+        "warmup_ticks": 50,
+        "random_seed": 42
+    },
+    "strategy": "auction",
+    "output": {
+        "csv_directory": "output/csv",
+        "figures_directory": "output/figures",
+        "tables_directory": "output/tables"
+    }
+}

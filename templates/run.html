@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+{% block title %}Run Experiment - Parking Simulation{% endblock %}
+{% block content %}
+<h1>Run Experiment</h1>
+
+<style>
+    .selector-grid {
+        margin-bottom: 0.25rem;
+    }
+
+    .field-card {
+        background: #111827;
+        border: 1px solid #2d3148;
+        border-radius: 8px;
+        padding: 0.9rem;
+    }
+
+    .field-card label {
+        color: #cbd5e1;
+        font-weight: 600;
+    }
+
+    .field-card select,
+    .field-card input[type="number"] {
+        margin-bottom: 0;
+        background: #0b1020;
+        border-color: #374151;
+    }
+
+    .field-card select:hover,
+    .field-card input[type="number"]:hover {
+        border-color: #4b5563;
+    }
+
+    .selector-hint {
+        color: #64748b;
+        display: block;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        margin-top: 0.45rem;
+    }
+
+    .is-hidden {
+        display: none;
+    }
+</style>
+
+{% if state.status == 'running' %}
+<div class="card">
+    <h2>Experiment in Progress</h2>
+    <p>
+        <span class="status-badge status-running">RUNNING</span>
+        Scenario: <strong>{{ state.scenario|default('All') }}</strong> &middot;
+        Strategy: <strong>{{ state.strategy|default('All') }}</strong> &middot;
+        Replications: <strong>{{ state.replications }}</strong>
+    </p>
+
+    <div class="progress-bar">
+        <div class="fill" id="progress-fill" style="width: 0%"></div>
+    </div>
+    <p id="progress-text" style="font-size: 0.85rem; color: #64748b;">Starting experiment...</p>
+
+    <div class="log" id="progress-log">
+        {% for line in state.progress_log %}
+        <div>{{ line }}</div>
+        {% endfor %}
+    </div>
+</div>
+
+<script>
+function pollProgress() {
+    fetch('/progress.json')
+        .then(r => r.json())
+        .then(state => {
+            const fill = document.getElementById('progress-fill');
+            const text = document.getElementById('progress-text');
+            const log = document.getElementById('progress-log');
+
+            if (state.status === 'completed') {
+                fill.style.width = '100%';
+                text.textContent = 'Experiment completed successfully!';
+                setTimeout(() => window.location.href = '/results', 1500);
+                return;
+            }
+            if (state.status === 'error') {
+                text.textContent = 'Error: ' + (state.error_message || 'Unknown error');
+                return;
+            }
+
+            const pct = state.total_runs > 0
+                ? Math.round((state.completed_runs / state.total_runs) * 100)
+                : 0;
+            fill.style.width = pct + '%';
+            text.textContent = 'Run ' + state.completed_runs + ' of ' + state.total_runs
+                + ' (' + pct + '%)';
+
+            log.innerHTML = '';
+            (state.progress_log || []).forEach(function(line) {
+                const d = document.createElement('div');
+                d.textContent = line;
+                log.appendChild(d);
+            });
+            log.scrollTop = log.scrollHeight;
+
+            setTimeout(pollProgress, 1500);
+        })
+        .catch(() => setTimeout(pollProgress, 3000));
+}
+pollProgress();
+</script>
+
+{% else %}
+<div class="card">
+    <h2>Configure Experiment</h2>
+    <p>Configure and launch a new simulation experiment. The experiment runs in the background.</p>
+
+    <form method="POST" action="{{ url_for('dashboard.run_experiment') }}">
+        <div class="grid-2 selector-grid">
+            <div class="field-card">
+                <label for="scenario">Scenario</label>
+                <select name="scenario" id="scenario">
+                    <option value="">All Scenarios (Low / Medium / High / Peak)</option>
+                    <option value="low_demand">Low Demand (lambda=2)</option>
+                    <option value="medium_demand">Medium Demand (lambda=5)</option>
+                    <option value="high_demand">High Demand (lambda=12)</option>
+                    <option value="peak_demand">Peak Demand (lambda=20)</option>
+                </select>
+            </div>
+            <div class="field-card">
+                <label for="strategy">Strategy</label>
+                <select name="strategy" id="strategy">
+                    <option value="">All Strategies (Auction / FCFS / Random / Greedy)</option>
+                    <option value="auction">Auction-Based (Proposed)</option>
+                    <option value="fcfs">First-Come-First-Served</option>
+                    <option value="random">Random Allocation</option>
+                    <option value="greedy">Greedy Allocation</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="grid-3 selector-grid">
+            <div class="field-card">
+                <label for="simulation_type">Simulation Type</label>
+                <select name="simulation_type" id="simulation_type">
+                    {% for key, simulation_type in simulation_types.items() %}
+                    <option value="{{ key }}">{{ simulation_type.display_name }}</option>
+                    {% endfor %}
+                </select>
+                <span class="selector-hint">Choose the simulation backend for this run.</span>
+            </div>
+            <div class="field-card is-hidden" id="city-field">
+                <label for="city">City</label>
+                <select name="city" id="city">
+                    <option value="">Select a city</option>
+                    {% for key, city in osm_cities.items() %}
+                    <option value="{{ key }}">{{ city.display_name }}</option>
+                    {% endfor %}
+                </select>
+                <span class="selector-hint">Used only for real city OSM simulations.</span>
+            </div>
+            <div class="field-card">
+                <label for="replications">Replications per Scenario x Strategy</label>
+                <input type="number" name="replications" id="replications" value="2" min="1" max="100">
+            </div>
+        </div>
+
+        <p style="font-size: 0.8rem; color: #64748b; margin-top: -0.5rem; margin-bottom: 1rem;">
+            Total runs = <strong id="total-display">32</strong>
+            (<span id="scenario-name">4</span> scenario(s) &times;
+             <span id="strategy-name">4</span> strategy(ies) &times;
+             <span id="reps-name">2</span> replications)
+        </p>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Launch Experiment</button>
+            <a href="{{ url_for('dashboard.index') }}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script>
+const SCENARIO_LIST = ["low_demand", "medium_demand", "high_demand", "peak_demand"];
+const STRATEGY_LIST = ["auction", "fcfs", "random", "greedy"];
+
+function toggleCitySelector() {
+    const simulationType = document.getElementById('simulation_type').value;
+    const cityField = document.getElementById('city-field');
+    const citySelect = document.getElementById('city');
+    const showCity = simulationType === 'osm_city';
+
+    cityField.classList.toggle('is-hidden', !showCity);
+    if (!showCity) {
+        citySelect.value = '';
+    }
+}
+
+function getLabel(id) {
+    const sel = document.getElementById(id);
+    return sel.options[sel.selectedIndex].text;
+}
+
+function recalcTotal() {
+    const scenario = document.getElementById('scenario').value;
+    const strategy = document.getElementById('strategy').value;
+    const reps = parseInt(document.getElementById('replications').value) || 1;
+
+    const nScenarios = scenario === '' ? SCENARIO_LIST.length : 1;
+    const nStrategies = strategy === '' ? STRATEGY_LIST.length : 1;
+    const total = nScenarios * nStrategies * reps;
+
+    document.getElementById('total-display').textContent = total;
+    document.getElementById('scenario-name').textContent = nScenarios;
+    document.getElementById('strategy-name').textContent = nStrategies;
+    document.getElementById('reps-name').textContent = reps;
+}
+
+document.getElementById('scenario').addEventListener('change', recalcTotal);
+document.getElementById('strategy').addEventListener('change', recalcTotal);
+document.getElementById('replications').addEventListener('input', recalcTotal);
+document.getElementById('simulation_type').addEventListener('change', toggleCitySelector);
+toggleCitySelector();
+recalcTotal();
+</script>
+
+{% if state.status == 'completed' %}
+<div class="card">
+    <h2>Previous Results Available</h2>
+    <p>The last experiment completed successfully. <a href="{{ url_for('dashboard.results') }}">View results &rarr;</a></p>
+</div>
+{% elif state.status == 'error' %}
+<div class="card" style="border-color: #dc2626;">
+    <h2 style="color: #fca5a5;">Last Experiment Failed</h2>
+    <p>{{ state.error_message }}</p>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

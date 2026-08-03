@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Parking Simulation Dashboard{% endblock %}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        nav { background: #1a1d27; border-bottom: 1px solid #2d3148; padding: 1rem 2rem; display: flex; align-items: center; gap: 2rem; }
+        nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
+        nav a:hover, nav a.active { color: #60a5fa; }
+        nav .brand { font-weight: 700; color: #e2e8f0; font-size: 1.1rem; margin-right: auto; }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #f1f5f9; }
+        h2 { font-size: 1.2rem; margin-bottom: 1rem; color: #cbd5e1; }
+        .card { background: #1a1d27; border: 1px solid #2d3148; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+        .card p { color: #94a3b8; font-size: 0.9rem; line-height: 1.6; }
+        .status-badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; }
+        .status-idle { background: #374151; color: #d1d5db; }
+        .status-running { background: #1e3a5f; color: #93c5fd; }
+        .status-completed { background: #14532d; color: #86efac; }
+        .status-error { background: #450a0a; color: #fca5a5; }
+        .btn { display: inline-block; padding: 0.6rem 1.2rem; border-radius: 6px; font-size: 0.9rem; font-weight: 600; text-decoration: none; cursor: pointer; border: none; transition: background 0.2s, transform 0.1s; }
+        .btn:active { transform: scale(0.97); }
+        .btn-primary { background: #2563eb; color: #fff; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-secondary { background: #374151; color: #e5e7eb; }
+        .btn-secondary:hover { background: #4b5563; }
+        .btn-success { background: #16a34a; color: #fff; }
+        .btn-success:hover { background: #15803d; }
+        .btn-danger { background: #dc2626; color: #fff; }
+        .btn-danger:hover { background: #b91c1c; }
+        label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.4rem; }
+        select, input[type="number"] { width: 100%; padding: 0.5rem 0.75rem; background: #0f1117; border: 1px solid #2d3148; border-radius: 6px; color: #e2e8f0; font-size: 0.9rem; margin-bottom: 1rem; }
+        select:focus, input:focus { outline: none; border-color: #2563eb; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; }
+        .stat-card { text-align: center; padding: 1.25rem; }
+        .stat-card .value { font-size: 1.8rem; font-weight: 700; color: #60a5fa; }
+        .stat-card .label { font-size: 0.8rem; color: #64748b; margin-top: 0.25rem; }
+        .progress-bar { width: 100%; height: 8px; background: #2d3148; border-radius: 4px; overflow: hidden; margin: 1rem 0; }
+        .progress-bar .fill { height: 100%; background: linear-gradient(90deg, #2563eb, #60a5fa); border-radius: 4px; transition: width 0.5s ease; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th { background: #1e2235; color: #94a3b8; font-weight: 600; text-align: left; padding: 0.6rem 0.8rem; border-bottom: 1px solid #2d3148; }
+        td { padding: 0.5rem 0.8rem; border-bottom: 1px solid #1e2235; color: #cbd5e1; }
+        tr:hover td { background: rgba(96, 165, 250, 0.05); }
+        .log { background: #0f1117; border: 1px solid #2d3148; border-radius: 6px; padding: 0.75rem; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; max-height: 200px; overflow-y: auto; color: #94a3b8; line-height: 1.8; }
+        .figure-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem; }
+        .figure-card img { width: 100%; border-radius: 4px; border: 1px solid #2d3148; }
+        .figure-card p { text-align: center; font-size: 0.85rem; color: #64748b; margin-top: 0.5rem; }
+        .download-links { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+        .form-actions { display: flex; gap: 0.75rem; margin-top: 1rem; }
+        @media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+        /* ---- Tooltip system (shared across all pages) ---- */
+        .tooltip-table th {
+            position: relative;
+        }
+        .tooltip-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #2d3148;
+            color: #60a5fa;
+            font-size: 10px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-left: 4px;
+            vertical-align: middle;
+            transition: background 0.2s, color 0.2s;
+            position: relative;
+            z-index: 10;
+        }
+        .tooltip-icon:hover {
+            background: #2563eb;
+            color: #fff;
+        }
+        .tooltip-popup {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            max-width: 320px;
+            background: #1e2235;
+            border: 1px solid #2d3148;
+            border-radius: 8px;
+            padding: 12px 14px;
+            font-size: 0.82rem;
+            line-height: 1.5;
+            color: #cbd5e1;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            pointer-events: none;
+        }
+        .tooltip-popup.visible {
+            display: block;
+        }
+        .tooltip-popup .tt-title {
+            font-weight: 700;
+            color: #60a5fa;
+            margin-bottom: 4px;
+            font-size: 0.85rem;
+        }
+        .tooltip-popup .tt-body {
+            color: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <span class="brand">Parking Sim</span>
+        <a href="{{ url_for('dashboard.index') }}" class="{% if request.endpoint == 'dashboard.index' %}active{% endif %}">Dashboard</a>
+        <a href="{{ url_for('dashboard.run_experiment') }}" class="{% if request.endpoint == 'dashboard.run_experiment' %}active{% endif %}">Run Experiment</a>
+        <a href="{{ url_for('dashboard.results') }}" class="{% if request.endpoint == 'dashboard.results' %}active{% endif %}">Results</a>
+        <a href="{{ url_for('dashboard.history') }}" class="{% if request.endpoint == 'dashboard.history' %}active{% endif %}">History</a>
+        <a href="{{ url_for('dashboard.visualize') }}" class="{% if request.endpoint == 'dashboard.visualize' %}active{% endif %}">Visualize</a>
+    </nav>
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Shared tooltip popup element -->
+    <div id="tooltip-popup" class="tooltip-popup"></div>
+
+    <script>
+    /* Shared tooltip engine — works on any .tooltip-icon with data-tooltip */
+    (function() {
+        var popup = document.getElementById('tooltip-popup');
+        if (!popup) return;
+        var activeIcon = null;
+
+        function positionPopup(e) {
+            var pad = 12;
+            var x = e.clientX + pad;
+            var y = e.clientY + pad;
+            var rect = popup.getBoundingClientRect();
+            if (x + 320 > window.innerWidth) x = e.clientX - 320 - pad;
+            if (y + rect.height > window.innerHeight) y = e.clientY - rect.height - pad;
+            popup.style.left = x + 'px';
+            popup.style.top = y + 'px';
+        }
+
+        function showPopup(icon, e) {
+            var text = icon.getAttribute('data-tooltip');
+            if (!text) return;
+            activeIcon = icon;
+            var parts = text.split(' | ');
+            var title = parts[0] || '';
+            var body = parts.slice(1).join('<br>') || '';
+            popup.innerHTML = '<div class="tt-title">' + title + '</div><div class="tt-body">' + body + '</div>';
+            popup.classList.add('visible');
+            positionPopup(e);
+        }
+
+        function hidePopup() {
+            activeIcon = null;
+            popup.classList.remove('visible');
+        }
+
+        /* Use event delegation so dynamically added icons work too */
+        document.addEventListener('mouseenter', function(e) {
+            if (e.target.classList && e.target.classList.contains('tooltip-icon')) {
+                showPopup(e.target, e);
+            }
+        }, true);
+
+        document.addEventListener('mousemove', function(e) {
+            if (activeIcon && e.target === activeIcon) positionPopup(e);
+        }, true);
+
+        document.addEventListener('mouseleave', function(e) {
+            if (e.target.classList && e.target.classList.contains('tooltip-icon')) {
+                hidePopup();
+            }
+        }, true);
+
+        document.addEventListener('click', function(e) {
+            if (e.target.classList && e.target.classList.contains('tooltip-icon')) {
+                e.stopPropagation();
+                if (popup.classList.contains('visible') && activeIcon === e.target) {
+                    hidePopup();
+                } else {
+                    showPopup(e.target, e);
+                }
+                return;
+            }
+            if (!e.target.closest || !e.target.closest('.tooltip-popup')) {
+                hidePopup();
+            }
+        });
+    })();
+    </script>
+</body>
+</html>

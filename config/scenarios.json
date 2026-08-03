@@ -1,0 +1,78 @@
+{
+    "scenarios": {
+        "low_demand": {
+            "name": "Low Demand",
+            "arrival_rate_lambda": 2,
+            "description": "Light traffic, supply exceeds demand"
+        },
+        "medium_demand": {
+            "name": "Medium Demand",
+            "arrival_rate_lambda": 5,
+            "description": "Moderate traffic, balanced supply-demand"
+        },
+        "high_demand": {
+            "name": "High Demand",
+            "arrival_rate_lambda": 12,
+            "description": "Heavy traffic, demand approaches capacity"
+        },
+        "peak_demand": {
+            "name": "Peak Demand",
+            "arrival_rate_lambda": 20,
+            "description": "Saturation, demand exceeds capacity"
+        }
+    },
+    "strategies": {
+        "auction": {
+            "name": "Auction-Based (Proposed)",
+            "description": "First-price sealed-bid auction with utility-based bidding"
+        },
+        "fcfs": {
+            "name": "First-Come-First-Served",
+            "description": "Drivers claim first available spot"
+        },
+        "random": {
+            "name": "Random Allocation",
+            "description": "Random spot assignment"
+        },
+        "greedy": {
+            "name": "Greedy Allocation",
+            "description": "Nearest available spot to destination"
+        }
+    },
+    "simulation_types": {
+        "mesa": {
+            "name": "mesa",
+            "display_name": "Mesa-Only Grid Simulation",
+            "description": "Mesa-only grid simulation (current behavior)"
+        },
+        "sumo": {
+            "name": "sumo",
+            "display_name": "Mesa with SUMO Traffic Integration",
+            "description": "Mesa with SUMO traffic integration"
+        },
+        "osm_city": {
+            "name": "osm_city",
+            "display_name": "Real City OSM with SUMO Traffic",
+            "description": "Real city OSM with SUMO traffic"
+        }
+    },
+    "osm_cities": {
+        "kuala_lumpur": {
+            "name": "kuala_lumpur",
+            "display_name": "Kuala Lumpur",
+            "description": "OSM-based SUMO traffic simulation for Kuala Lumpur"
+        },
+        "johor_bahru": {
+            "name": "johor_bahru",
+            "display_name": "Johor Bahru",
+            "description": "OSM-based SUMO traffic simulation for Johor Bahru"
+        },
+        "penang": {
+            "name": "penang",
+            "display_name": "Penang",
+            "description": "OSM-based SUMO traffic simulation for Penang"
+        }
+    },
+    "replications": 30,
+    "random_seeds": "auto"
+}

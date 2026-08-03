@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Results - Parking Simulation{% endblock %}
+{% block content %}
+{% macro result_label(key) -%}
+{% set labels = {
+    'tfi': 'Traffic Flow Impact (TFI)',
+    'mean_tfi': 'Mean Traffic Flow Impact (TFI)',
+    'std_tfi': 'Standard Deviation of Traffic Flow Impact (TFI)'
+} %}
+{{ labels.get(key, key.replace('_', ' ').title()) }}
+{%- endmacro %}
+<h1>Experiment Results</h1>
+
+{% if state.status in ('running', 'error') %}
+<div class="card">
+    <h2>Experiment {{ state.status|capitalize }}</h2>
+    {% if state.status == 'error' and state.error_message %}
+    <p>Error: {{ state.error_message }}</p>
+    {% endif %}
+    {% if state.progress_log %}
+    <p>{{ state.progress_log[-1] }}</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if history_run_id is defined and history_run_id %}
+<div class="card">
+    <h2>Run #{{ history_run_id }}{% if run_at is defined %} — {{ run_at }}{% endif %}</h2>
+    <div class="download-links">
+        <a href="{{ url_for('dashboard.history') }}" class="btn btn-secondary">Back to History</a>
+        <a href="{{ url_for('dashboard.history_download', run_id=history_run_id, filename='experiment_results.csv') }}" class="btn btn-primary">Download experiment_results.csv</a>
+        <a href="{{ url_for('dashboard.history_download', run_id=history_run_id, filename='summary_statistics.csv') }}" class="btn btn-secondary">Download summary_statistics.csv</a>
+        <a href="{{ url_for('dashboard.history_download', run_id=history_run_id, filename='por_timeseries.csv') }}" class="btn btn-secondary">Download por_timeseries.csv</a>
+    </div>
+</div>
+{% endif %}
+
+{% if primary_figures %}
+<div class="card">
+    <h2>Figures{% if latest_run_id is not none %} (Run #{{ latest_run_id }}){% endif %}</h2>
+    <div class="figure-grid">
+        {% for figure in primary_figures %}
+        <div class="figure-card" data-figure="{{ figure.filename }}">
+            <img src="{{ url_for('dashboard.figure', name=figure.filename) }}" alt="{{ figure.alt }}">
+            <h3>{{ figure.title }}</h3>
+            <p>{{ figure.description }}</p>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+{% if additional_figures %}
+<div class="card">
+    <h2>All Figures</h2>
+    <details>
+        <summary style="cursor: pointer; color: #60a5fa;">Show/Hide All Figures ({{ additional_figures|length }})</summary>
+        <div class="figure-grid" style="margin-top: 1rem;">
+            {% for fig in additional_figures %}
+            <div class="figure-card">
+                <img src="{{ url_for('dashboard.figure', name=fig) }}" alt="{{ fig }}">
+                <p>{{ fig.replace('_', ' ').replace('.png', '') }}</p>
+            </div>
+            {% endfor %}
+        </div>
+    </details>
+</div>
+{% endif %}
+
+{% if summary_rows %}
+<div class="card">
+    <h2>Summary Statistics</h2>
+    <div style="overflow-x: auto;">
+    <table class="tooltip-table">
+        <thead>
+            <tr>
+                {% for key in summary_rows[0].keys() %}
+                <th>
+                    {{ result_label(key) }}
+                    <span class="tooltip-icon" data-tooltip="{{ tooltips.get(key, '') }}">?</span>
+                </th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in summary_rows %}
+            <tr>
+                {% for key, val in row.items() %}
+                <td>{{ "%.2f"|format(val|float) if val is number else val }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+{% endif %}
+
+{% if rows %}
+<div class="card">
+    <h2>Raw Results ({{ rows|length }} runs)</h2>
+    <div style="overflow-x: auto; max-height: 400px; overflow-y: auto;">
+    <table class="tooltip-table">
+        <thead>
+            <tr>
+                {% for key in rows[0].keys() %}
+                <th>
+                    {{ result_label(key) }}
+                    <span class="tooltip-icon" data-tooltip="{{ tooltips.get(key, '') }}">?</span>
+                </th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows[:50] %}
+            <tr>
+                {% for key, val in row.items() %}
+                <td>{{ "%.2f"|format(val|float) if val is number else val }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% if rows|length > 50 %}
+    <p style="text-align: center; color: #64748b; font-size: 0.85rem; margin-top: 0.5rem;">
+        Showing first 50 of {{ rows|length }} rows. Download CSV for full data.
+    </p>
+    {% endif %}
+    </div>
+</div>
+{% endif %}
+
+{% if not (history_run_id is defined and history_run_id) %}
+<div class="card">
+    <h2>Downloads</h2>
+    <div class="download-links">
+        <a href="{{ url_for('dashboard.download', filename='experiment_results.csv') }}" class="btn btn-primary">Download experiment_results.csv</a>
+        <a href="{{ url_for('dashboard.download', filename='summary_statistics.csv') }}" class="btn btn-secondary">Download summary_statistics.csv</a>
+        <a href="{{ url_for('dashboard.download', filename='por_timeseries.csv') }}" class="btn btn-secondary">Download por_timeseries.csv</a>
+    </div>
+</div>
+{% endif %}
+
+{% if not rows %}
+<div class="card">
+    <h2>No Results Yet</h2>
+    <p>No experiment results found. <a href="{{ url_for('dashboard.run_experiment') }}">Run an experiment</a> to generate results.</p>
+</div>
+{% endif %}
+
+<script>
+/* Light polling — refresh if experiment just completed */
+setTimeout(function checkCompletion() {
+    fetch('/progress.json')
+        .then(r => r.json())
+        .then(state => {
+            if (state.status === 'completed') {
+                window.location.reload();
+            } else if (state.status === 'running') {
+                setTimeout(checkCompletion, 2000);
+            }
+        })
+        .catch(() => {});
+}, 2000);
+</script>
+{% endblock %}

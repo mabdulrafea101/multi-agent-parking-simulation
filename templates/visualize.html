@@ -1,0 +1,1560 @@
+{% extends "base.html" %}
+{% block title %}Visualization - Parking Simulation{% endblock %}
+{% block content %}
+<style>
+    #viz-container { display: flex; gap: 1rem; height: calc(100vh - 120px); min-height: 500px; }
+    #three-canvas-wrap { flex: 1; position: relative; background: #0a0e17; border-radius: 8px; overflow: hidden; border: 1px solid #2d3148; }
+    #three-canvas-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+    #sidebar { width: 320px; display: flex; flex-direction: column; gap: 0.75rem; overflow-y: auto; }
+    #controls-panel { background: #1a1d27; border: 1px solid #2d3148; border-radius: 8px; padding: 1rem; }
+    #kpi-panel { background: #1a1d27; border: 1px solid #2d3148; border-radius: 8px; padding: 1rem; flex: 1; }
+    .kpi-row { display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #1e2235; font-size: 0.85rem; }
+    .kpi-label { color: #94a3b8; }
+    .kpi-value { color: #60a5fa; font-weight: 600; font-family: 'SF Mono', monospace; }
+    .playback-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0; }
+    .playback-btn { background: #2563eb; color: #fff; border: none; border-radius: 6px; width: 36px; height: 36px; cursor: pointer; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; transition: background 0.2s; }
+    .playback-btn:hover { background: #1d4ed8; }
+    .playback-btn.active { background: #16a34a; }
+    .speed-slider { flex: 1; accent-color: #2563eb; }
+    .tick-display { color: #64748b; font-size: 0.8rem; font-family: monospace; min-width: 80px; text-align: right; }
+    .legend { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+    .legend-item { display: flex; align-items: center; gap: 0.3rem; font-size: 0.75rem; color: #94a3b8; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .legend-square { width: 10px; height: 10px; border-radius: 2px; }
+    .mode-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .mode-btn { flex: 1; padding: 0.4rem; background: #374151; color: #94a3b8; border: 1px solid #2d3148; border-radius: 6px; cursor: pointer; font-size: 0.8rem; text-align: center; transition: all 0.2s; }
+    .mode-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+    #map-container { flex: 1; display: none; border-radius: 8px; overflow: hidden; border: 1px solid #2d3148; }
+    #kpi-chart-canvas { width: 100%; height: 120px; }
+    .run-selector { margin-bottom: 0.75rem; }
+    .run-selector select { width: 100%; }
+    #recording-indicator { display: none; color: #ef4444; font-size: 0.8rem; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    /* CSS2D Tooltip */
+    .driver-tooltip {
+        background: rgba(15, 20, 35, 0.92);
+        border: 1px solid #3b82f6;
+        border-radius: 6px;
+        padding: 6px 10px;
+        color: #e2e8f0;
+        font-size: 11px;
+        font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+        pointer-events: none;
+        white-space: nowrap;
+        line-height: 1.5;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        backdrop-filter: blur(4px);
+    }
+    .driver-tooltip .tt-id { color: #60a5fa; font-weight: 700; }
+    .driver-tooltip .tt-state-searching { color: #f59e0b; }
+    .driver-tooltip .tt-state-assigned  { color: #3b82f6; }
+    .driver-tooltip .tt-state-parked    { color: #22c55e; }
+    .driver-tooltip .tt-spot  { color: #c084fc; }
+
+    #three-canvas-wrap > div { pointer-events: none; }
+</style>
+
+<div id="viz-container">
+    <div id="three-canvas-wrap"></div>
+    <div id="map-container"></div>
+
+    <div id="sidebar">
+        <div id="controls-panel">
+            <h2 style="font-size:1rem; margin-bottom:0.5rem;">Playback Controls</h2>
+
+            <div class="run-selector">
+                <label>Select Run</label>
+                <select id="run-select">
+                    <option value="">-- Select a recorded run --</option>
+                    {% for r in runs %}
+                    <option value="{{ r.run_id }}">{{ r.run_id }} ({{ r.meta.total_frames }} frames, {{ r.meta.strategy }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div id="recording-indicator">&#9679; REC</div>
+
+            <div class="playback-row">
+                <button class="playback-btn" id="btn-start" title="Go to start">&#9198;</button>
+                <button class="playback-btn" id="btn-prev" title="Step back">&#9664;</button>
+                <button class="playback-btn" id="btn-play" title="Play/Pause">&#9654;</button>
+                <button class="playback-btn" id="btn-next" title="Step forward">&#9654;</button>
+                <button class="playback-btn" id="btn-end" title="Go to end">&#9197;</button>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+                <span style="color:#64748b; font-size:0.75rem;">Speed</span>
+                <input type="range" class="speed-slider" id="speed-slider" min="1" max="30" value="10">
+                <span id="speed-label" style="color:#94a3b8; font-size:0.75rem; min-width:30px;">10x</span>
+            </div>
+
+            <div class="playback-row">
+                <input type="range" id="tick-slider" style="flex:1; accent-color:#2563eb;" min="0" max="100" value="0">
+                <span class="tick-display" id="tick-display">T: 0 / 0</span>
+            </div>
+
+            <div class="mode-toggle">
+                <button class="mode-btn active" id="mode-grid" onclick="setMode('grid')">Grid 3D</button>
+                <button class="mode-btn" id="mode-map" onclick="setMode('map')">Map View</button>
+            </div>
+
+            <div class="legend">
+                <div class="legend-item"><div class="legend-dot" style="background:#f59e0b;"></div>Searching</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#3b82f6;"></div>Assigned</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#22c55e;"></div>Parked</div>
+                <div class="legend-item"><div class="legend-square" style="background:#6366f1;"></div>Spot (Free)</div>
+                <div class="legend-item"><div class="legend-square" style="background:#ef4444;"></div>Spot (Occupied)</div>
+            </div>
+        </div>
+
+        <div id="kpi-panel">
+            <h2 style="font-size:1rem; margin-bottom:0.5rem;">Live KPIs</h2>
+            <div class="kpi-row"><span class="kpi-label">Tick</span><span class="kpi-value" id="kpi-tick">0</span></div>
+            <div class="kpi-row"><span class="kpi-label">Total Drivers</span><span class="kpi-value" id="kpi-total">0</span></div>
+            <div class="kpi-row"><span class="kpi-label">Searching</span><span class="kpi-value" id="kpi-searching">0</span></div>
+            <div class="kpi-row"><span class="kpi-label">Assigned</span><span class="kpi-value" id="kpi-assigned">0</span></div>
+            <div class="kpi-row"><span class="kpi-label">Parked</span><span class="kpi-value" id="kpi-parked">0</span></div>
+            <div class="kpi-row"><span class="kpi-label">Spots Occupied</span><span class="kpi-value" id="kpi-occ">0 / 0</span></div>
+            <div class="kpi-row"><span class="kpi-label">Success Rate</span><span class="kpi-value" id="kpi-rsr">0%</span></div>
+            <div class="kpi-row"><span class="kpi-label">Failed</span><span class="kpi-value" id="kpi-failed">0</span></div>
+
+            <h3 style="font-size:0.85rem; margin-top:1rem; margin-bottom:0.5rem; color:#cbd5e1;">Search Time Distribution</h3>
+            <canvas id="kpi-chart-canvas"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Three.js + OrbitControls + CSS2DRenderer + Leaflet from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS2DRenderer.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// PARKING SIMULATION VISUALIZER
+// Synthesizes smooth car movement from lifecycle data.
+// x/y are STATIC spawn positions; dx/dy are DESTINATION coordinates.
+// ═══════════════════════════════════════════════════════════════════════
+
+const SIM = {
+    meta: null,
+    frames: [],
+    currentTick: 0,
+    playing: false,
+    speed: 10,
+    mode: 'grid',
+    scene: null,
+    camera: null,
+    renderer: null,
+    labelRenderer: null,
+    orbit: null,
+    spotMesh: null,
+    driverMesh: null,
+    gridHelper: null,
+    raycaster: null,
+    mouseNDC: new THREE.Vector2(-999, -999),
+    hoveredDriverId: null,
+    tooltipEl: null,
+    tooltipObj: null,
+    // Leaflet
+    map: null,
+    mapMarkers: {},       // driverId -> L.circleMarker (reused per id)
+    mapDriverLayer: null, // L.layerGroup for driver markers
+    mapSpotLayer: null,   // L.layerGroup for spot markers
+    mapZoneLayer: null,   // L.layerGroup for zone markers
+    mapGridLayer: null,   // L.layerGroup for grid/road overlay
+    mapLegend: null,      // legend control reference
+    mapInitialized: false,
+    mapSpotMarkerMap: {}, // spotId -> L.circleMarker
+    // KPI chart
+    chartCtx: null,
+    pstHistory: [],
+    // Driver timeline data (pre-computed)
+    driverTimelines: new Map(),
+    // Display positions cache (computed per frame)
+    displayPositions: new Map(),
+};
+
+// State Colors
+const COLORS = {
+    searching: 0xf59e0b,
+    assigned:  0x3b82f6,
+    parked:    0x22c55e,
+    departed:  0x6b7280,
+    spotFree:  0x6366f1,
+    spotOcc:   0xef4444,
+    ground:    0x0a0e17,
+    road:      0x2d3148,
+    roadLine:  0x4a5068,
+};
+
+const STATE_NAMES = ['searching', 'assigned', 'parked', 'departed'];
+
+// Animation constants
+const ENTRY_DURATION = 6;      // frames for entry animation
+const DEPARTURE_DURATION = 5;  // frames for departure animation
+const WANDER_SPEED = 1.8;      // grid units per frame during search
+const DRIVE_SPEED = 3.5;       // grid units per frame toward spot
+
+// ═══════════════════════════════════════════════════════════════════════
+// DRIVER TIMELINE BUILDER
+// Pre-processes all frames to build per-driver lifecycle data
+// ═══════════════════════════════════════════════════════════════════════
+
+function buildDriverTimelines() {
+    SIM.driverTimelines.clear();
+    const frames = SIM.frames;
+    const totalFrames = frames.length;
+
+    for (let fi = 0; fi < totalFrames; fi++) {
+        const frame = frames[fi];
+        if (!frame || !frame.drivers) continue;
+        for (const d of frame.drivers) {
+            if (!SIM.driverTimelines.has(d.id)) {
+                // First frame this driver appears — this is their spawn position
+                SIM.driverTimelines.set(d.id, {
+                    id: d.id,
+                    entryFrame: fi,
+                    lastFrame: fi,
+                    spawnPos: { x: d.x, y: d.y },
+                    destination: { x: d.dx, y: d.dy },
+                    frameStates: [{ fi: fi, state: d.s, sid: d.sid, dx: d.dx, dy: d.dy }],
+                });
+            }
+            const tl = SIM.driverTimelines.get(d.id);
+            tl.lastFrame = fi;
+            tl.frameStates.push({ fi: fi, state: d.s, sid: d.sid, dx: d.dx, dy: d.dy });
+            // Update destination if driver has one
+            if (d.dx !== undefined && d.dy !== undefined) {
+                tl.destination.x = d.dx;
+                tl.destination.y = d.dy;
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// NOISE / WANDERING FUNCTIONS
+// Simple deterministic pseudo-random walk for searching phase
+// ═══════════════════════════════════════════════════════════════════════
+
+// Simple seeded hash for deterministic randomness
+function seededRandom(seed) {
+    let x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+}
+
+// Simple 1D value noise
+function valueNoise(t, seed) {
+    const i = Math.floor(t);
+    const f = t - i;
+    const u = f * f * (3.0 - 2.0 * f); // smoothstep
+    const a = seededRandom(i + seed * 1000);
+    const b = seededRandom(i + 1 + seed * 1000);
+    return a + (b - a) * u;
+}
+
+// Compute wandering position for a searching driver
+function computeWanderPosition(spawn, destination, frameIdx, entryFrame, searchSeed) {
+    const elapsed = frameIdx - entryFrame;
+    const t = elapsed * 0.08; // slow oscillation
+
+    // Multiple frequency sine waves for organic movement
+    const dx = valueNoise(t * 1.3, searchSeed + 0.1) * 2 - 1;
+    const dy = valueNoise(t * 1.7, searchSeed + 0.2) * 2 - 1;
+
+    // Add sinusoidal drift
+    const waveX = Math.sin(t * 2.1 + searchSeed) * 3;
+    const waveY = Math.cos(t * 1.8 + searchSeed * 0.7) * 3;
+
+    // Slight drift toward destination
+    const toDestX = destination.x - spawn.x;
+    const toDestY = destination.y - spawn.y;
+    const dist = Math.sqrt(toDestX * toDestX + toDestY * toDestY);
+    let driftX = 0, driftY = 0;
+    if (dist > 0.1) {
+        const driftStrength = Math.min(0.3, elapsed * 0.005); // slowly increase drift
+        driftX = (toDestX / dist) * driftStrength * 5;
+        driftY = (toDestY / dist) * driftStrength * 5;
+    }
+
+    let x = spawn.x + waveX + dx * 2.5 + driftX;
+    let y = spawn.y + waveY + dy * 2.5 + driftY;
+
+    // Clamp to grid bounds (with margin)
+    x = Math.max(2, Math.min(98, x));
+    y = Math.max(2, Math.min(98, y));
+
+    return { x, y };
+}
+
+// Compute the edge point closest to a given position (for entry/exit)
+function getNearestEdgePoint(pos) {
+    const margin = -5;
+    const gx = 100, gy = 100;
+    const dists = [
+        { x: pos.x, y: margin, d: pos.y - margin },           // bottom
+        { x: pos.x, y: gy - margin, d: (gy - margin) - pos.y }, // top
+        { x: margin, y: pos.y, d: pos.x - margin },           // left
+        { x: gx - margin, y: pos.y, d: (gx - margin) - pos.x }, // right
+    ];
+    dists.sort((a, b) => a.d - b.d);
+    return { x: dists[0].x, y: dists[0].y };
+}
+
+// Easing function (ease-in-out cubic)
+function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+// Lerp helper
+function lerpVal(a, b, t) {
+    return a + (b - a) * t;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// DISPLAY POSITION COMPUTATION
+// For each driver at the current frame, compute where they should appear
+// ═══════════════════════════════════════════════════════════════════════
+
+function computeDisplayPositions(currentFrame) {
+    SIM.displayPositions.clear();
+    const frames = SIM.frames;
+    if (currentFrame < 0 || currentFrame >= frames.length) return;
+    const frame = frames[currentFrame];
+    if (!frame || !frame.drivers) return;
+
+    for (const d of frame.drivers) {
+        const tl = SIM.driverTimelines.get(d.id);
+        if (!tl) continue;
+
+        const entryFrame = tl.entryFrame;
+        const lastFrame = tl.lastFrame;
+        const spawn = tl.spawnPos;
+        const dest = tl.destination;
+        const framesSinceEntry = currentFrame - entryFrame;
+        const framesUntilExit = lastFrame - currentFrame;
+        const searchSeed = tl.id * 13.37;
+
+        let displayX, displayY;
+        let rotationAngle = 0;
+
+        if (d.s === 2) {
+            // ── PARKED: at the spot position ──
+            const spot = findSpotById(d.sid);
+            if (spot) {
+                displayX = spot.x;
+                displayY = spot.y;
+            } else {
+                displayX = dest.x;
+                displayY = dest.y;
+            }
+            // Idle animation: tiny oscillation
+            const idlePhase = currentFrame * 0.15 + tl.id * 0.7;
+            displayX += Math.sin(idlePhase) * 0.05;
+            displayY += Math.cos(idlePhase * 1.3) * 0.05;
+            rotationAngle = 0; // no specific direction while parked
+
+        } else if (d.s === 1) {
+            // ── ASSIGNED: driving toward the spot ──
+            const spot = findSpotById(d.sid);
+            const targetX = spot ? spot.x : dest.x;
+            const targetY = spot ? spot.y : dest.y;
+
+            // Compute how far along the drive we are
+            const totalDist = Math.sqrt(
+                Math.pow(targetX - spawn.x, 2) + Math.pow(targetY - spawn.y, 2)
+            );
+            // Use time since state change to compute progress
+            // Find when state changed to 1
+            const assignedFrame = findStateTransitionFrame(tl, 1, currentFrame);
+            const framesDriving = currentFrame - assignedFrame;
+            const driveDuration = Math.max(10, Math.ceil(totalDist / DRIVE_SPEED));
+            const progress = Math.min(1.0, easeInOutCubic(framesDriving / driveDuration));
+
+            displayX = lerpVal(spawn.x, targetX, progress);
+            displayY = lerpVal(spawn.y, targetY, progress);
+
+            // Face the direction of movement toward spot
+            const dxMov = targetX - spawn.x;
+            const dyMov = targetY - spawn.y;
+            if (Math.abs(dxMov) > 0.01 || Math.abs(dyMov) > 0.01) {
+                rotationAngle = Math.atan2(dxMov, dyMov);
+            }
+
+        } else {
+            // ── SEARCHING (state 0): wandering + entry animation ──
+            if (framesSinceEntry < ENTRY_DURATION) {
+                // Entry animation: interpolate from edge to spawn position
+                const edgePos = getNearestEdgePoint(spawn);
+                const t = easeInOutCubic(framesSinceEntry / ENTRY_DURATION);
+                displayX = lerpVal(edgePos.x, spawn.x, t);
+                displayY = lerpVal(edgePos.y, spawn.y, t);
+                // Face direction of entry
+                const dxMov = spawn.x - edgePos.x;
+                const dyMov = spawn.y - edgePos.y;
+                if (Math.abs(dxMov) > 0.01 || Math.abs(dyMov) > 0.01) {
+                    rotationAngle = Math.atan2(dxMov, dyMov);
+                }
+            } else {
+                // Wandering pattern
+                const wander = computeWanderPosition(spawn, dest, currentFrame, entryFrame, searchSeed);
+                displayX = wander.x;
+                displayY = wander.y;
+
+                // Estimate rotation from wander delta (approximate)
+                const prevWander = computeWanderPosition(spawn, dest, currentFrame - 1, entryFrame, searchSeed);
+                const dxMov = displayX - prevWander.x;
+                const dyMov = displayY - prevWander.y;
+                if (Math.abs(dxMov) > 0.01 || Math.abs(dyMov) > 0.01) {
+                    rotationAngle = Math.atan2(dxMov, dyMov);
+                }
+            }
+        }
+
+        SIM.displayPositions.set(d.id, {
+            x: displayX,
+            y: displayY,
+            z: displayY,  // Three.js Z = grid Y
+            state: d.s,
+            sid: d.sid,
+            rotation: rotationAngle,
+            id: d.id,
+        });
+    }
+}
+
+// Find a spot by its ID from metadata
+function findSpotById(spotId) {
+    if (!SIM.meta || !SIM.meta.spots || spotId === null || spotId === undefined) return null;
+    return SIM.meta.spots.find(s => s.id === spotId) || null;
+}
+
+// Find the frame where a driver transitioned TO a specific state (working backwards)
+function findStateTransitionFrame(timeline, targetState, currentFrame) {
+    const frames = timeline.frameStates;
+    for (let i = frames.length - 1; i >= 0; i--) {
+        if (frames[i].fi <= currentFrame && frames[i].state === targetState) {
+            // Found it - now find when it changed TO this state
+            if (i > 0 && frames[i - 1].state !== targetState) {
+                return frames[i].fi;
+            }
+            if (i === 0) return frames[0].fi;
+        }
+    }
+    // Fallback: return entry frame
+    return timeline.entryFrame;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// THREE.JS INITIALIZATION
+// ═══════════════════════════════════════════════════════════════════════
+
+function initThreeJS() {
+    const wrap = document.getElementById('three-canvas-wrap');
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+
+    // Scene
+    SIM.scene = new THREE.Scene();
+    SIM.scene.background = new THREE.Color(0x0a0e17);
+    SIM.scene.fog = new THREE.FogExp2(0x0a0e17, 0.003);
+
+    // Camera
+    SIM.camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 2000);
+    SIM.camera.position.set(50, 120, 160);
+    SIM.camera.lookAt(50, 0, 50);
+
+    // WebGL Renderer
+    SIM.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    SIM.renderer.setSize(w, h);
+    SIM.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    SIM.renderer.shadowMap.enabled = true;
+    SIM.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    wrap.appendChild(SIM.renderer.domElement);
+
+    // CSS2D Renderer (tooltips)
+    SIM.labelRenderer = new THREE.CSS2DRenderer();
+    SIM.labelRenderer.setSize(w, h);
+    SIM.labelRenderer.domElement.style.position = 'absolute';
+    SIM.labelRenderer.domElement.style.top = '0';
+    SIM.labelRenderer.domElement.style.left = '0';
+    SIM.labelRenderer.domElement.style.pointerEvents = 'none';
+    wrap.appendChild(SIM.labelRenderer.domElement);
+
+    // OrbitControls
+    SIM.orbit = new THREE.OrbitControls(SIM.camera, SIM.renderer.domElement);
+    SIM.orbit.target.set(50, 0, 50);
+    SIM.orbit.enableDamping = true;
+    SIM.orbit.dampingFactor = 0.08;
+    SIM.orbit.minDistance = 20;
+    SIM.orbit.maxDistance = 500;
+    SIM.orbit.maxPolarAngle = Math.PI / 2 - 0.05;
+    SIM.orbit.update();
+
+    // Lighting
+    const ambient = new THREE.AmbientLight(0x404060, 0.6);
+    SIM.scene.add(ambient);
+
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(100, 200, 50);
+    dir.castShadow = true;
+    dir.shadow.mapSize.width = 2048;
+    dir.shadow.mapSize.height = 2048;
+    dir.shadow.camera.near = 0.5;
+    dir.shadow.camera.far = 500;
+    dir.shadow.camera.left = -100;
+    dir.shadow.camera.right = 100;
+    dir.shadow.camera.top = 100;
+    dir.shadow.camera.bottom = -100;
+    SIM.scene.add(dir);
+
+    const point = new THREE.PointLight(0x60a5fa, 0.4, 300);
+    point.position.set(50, 80, 50);
+    SIM.scene.add(point);
+
+    // Ground Plane
+    const groundGeo = new THREE.PlaneGeometry(200, 200);
+    const groundMat = new THREE.MeshStandardMaterial({
+        color: COLORS.ground,
+        roughness: 0.95,
+        metalness: 0.05,
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(50, -0.15, 50);
+    ground.receiveShadow = true;
+    SIM.scene.add(ground);
+
+    // Subtle Grid Overlay
+    SIM.gridHelper = new THREE.GridHelper(100, 100, 0x141828, 0x141828);
+    SIM.gridHelper.position.set(50, 0.01, 50);
+    SIM.gridHelper.material.opacity = 0.3;
+    SIM.gridHelper.material.transparent = true;
+    SIM.scene.add(SIM.gridHelper);
+
+    // Road Grid
+    buildRoadGrid();
+
+    // Raycaster & Tooltip
+    SIM.raycaster = new THREE.Raycaster();
+    setupTooltip();
+
+    // Mouse tracking
+    SIM.renderer.domElement.addEventListener('mousemove', (e) => {
+        const rect = SIM.renderer.domElement.getBoundingClientRect();
+        SIM.mouseNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        SIM.mouseNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    });
+
+    // Resize
+    window.addEventListener('resize', () => {
+        const w2 = wrap.clientWidth;
+        const h2 = wrap.clientHeight;
+        SIM.camera.aspect = w2 / h2;
+        SIM.camera.updateProjectionMatrix();
+        SIM.renderer.setSize(w2, h2);
+        SIM.labelRenderer.setSize(w2, h2);
+    });
+
+    SIM.chartCtx = document.getElementById('kpi-chart-canvas').getContext('2d');
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ROAD GRID
+// ═══════════════════════════════════════════════════════════════════════
+
+function buildRoadGrid() {
+    const roadGroup = new THREE.Group();
+    roadGroup.name = 'roadGrid';
+    SIM.scene.add(roadGroup);
+
+    const roadMat = new THREE.MeshStandardMaterial({
+        color: COLORS.road,
+        roughness: 0.85,
+        metalness: 0.05,
+    });
+
+    const dashMat = new THREE.LineBasicMaterial({ color: COLORS.roadLine, transparent: true, opacity: 0.5 });
+
+    const gridW = 100;
+    const spacing = 10;
+    const roadWidth = 2.5;
+    const dashY = 0.08;
+
+    // Horizontal roads (along X)
+    for (let y = 0; y <= gridW; y += spacing) {
+        const geo = new THREE.PlaneGeometry(gridW, roadWidth * 2);
+        const mesh = new THREE.Mesh(geo, roadMat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.set(gridW / 2, 0.02, y);
+        mesh.receiveShadow = true;
+        roadGroup.add(mesh);
+
+        const pts = [];
+        for (let x = 0; x <= gridW; x += 1.5) {
+            pts.push(new THREE.Vector3(x, dashY, y - 0.15));
+            pts.push(new THREE.Vector3(Math.min(x + 0.6, gridW), dashY, y - 0.15));
+        }
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+        const line = new THREE.LineSegments(lineGeo, dashMat);
+        roadGroup.add(line);
+    }
+
+    // Vertical roads (along Z)
+    for (let x = 0; x <= gridW; x += spacing) {
+        const geo = new THREE.PlaneGeometry(roadWidth * 2, gridW);
+        const mesh = new THREE.Mesh(geo, roadMat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.set(x, 0.02, gridW / 2);
+        mesh.receiveShadow = true;
+        roadGroup.add(mesh);
+
+        const pts = [];
+        for (let z = 0; z <= gridW; z += 1.5) {
+            pts.push(new THREE.Vector3(x - 0.15, dashY, z));
+            pts.push(new THREE.Vector3(x - 0.15, dashY, Math.min(z + 0.6, gridW)));
+        }
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+        const line = new THREE.LineSegments(lineGeo, dashMat);
+        roadGroup.add(line);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TOOLTIP
+// ═══════════════════════════════════════════════════════════════════════
+
+function setupTooltip() {
+    SIM.tooltipEl = document.createElement('div');
+    SIM.tooltipEl.className = 'driver-tooltip';
+    SIM.tooltipEl.style.display = 'none';
+    SIM.tooltipEl.innerHTML = '<span class="tt-id">Driver #0</span><br><span class="tt-state-searching">Searching</span>';
+
+    SIM.tooltipObj = new THREE.CSS2DObject(SIM.tooltipEl);
+    SIM.tooltipObj.position.set(0, -1000, 0);
+    SIM.scene.add(SIM.tooltipObj);
+}
+
+function updateTooltip() {
+    if (!SIM.driverMesh || !SIM.frames.length || !SIM.meta) {
+        SIM.tooltipEl.style.display = 'none';
+        return;
+    }
+
+    SIM.raycaster.setFromCamera(SIM.mouseNDC, SIM.camera);
+    const intersects = SIM.raycaster.intersectObject(SIM.driverMesh);
+
+    if (intersects.length > 0) {
+        const instanceId = intersects[0].instanceId;
+        const frame = SIM.frames[SIM.currentTick];
+        if (!frame || !frame.drivers || instanceId >= frame.drivers.length) {
+            SIM.tooltipEl.style.display = 'none';
+            return;
+        }
+        const d = frame.drivers[instanceId];
+        if (d === undefined || d === null) {
+            SIM.tooltipEl.style.display = 'none';
+            return;
+        }
+
+        const stateLabel = STATE_NAMES[d.s] || 'unknown';
+        const stateClass = 'tt-state-' + stateLabel;
+        const spotText = d.sid !== null && d.sid !== undefined ? `Spot #${d.sid}` : 'None';
+
+        SIM.tooltipEl.innerHTML =
+            `<span class="tt-id">Driver #${d.id}</span><br>` +
+            `<span class="${stateClass}">${stateLabel.charAt(0).toUpperCase() + stateLabel.slice(1)}</span><br>` +
+            `<span class="tt-spot">Spot: ${spotText}</span>`;
+        SIM.tooltipEl.style.display = 'block';
+
+        SIM.tooltipObj.position.set(
+            intersects[0].point.x,
+            intersects[0].point.y + 3,
+            intersects[0].point.z
+        );
+    } else {
+        SIM.tooltipEl.style.display = 'none';
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// DATA LOADING
+// ═══════════════════════════════════════════════════════════════════════
+
+async function loadRun(runId) {
+    if (!runId) return;
+    document.getElementById('recording-indicator').style.display = 'inline';
+    SIM.playing = false;
+    const btnPlay = document.getElementById('btn-play');
+    btnPlay.textContent = '\u25B6';
+    btnPlay.classList.remove('active');
+
+    try {
+        const [metaRes, framesRes] = await Promise.all([
+            fetch(`/api/viz/meta/${runId}`),
+            fetch(`/api/viz/frames/${runId}`)
+        ]);
+        SIM.meta = await metaRes.json();
+        SIM.frames = await framesRes.json();
+        SIM.currentTick = 0;
+        SIM.pstHistory = [];
+
+        // Build driver timelines from ALL frames
+        buildDriverTimelines();
+
+        // Update slider
+        const slider = document.getElementById('tick-slider');
+        slider.max = Math.max(0, SIM.frames.length - 1);
+        slider.value = 0;
+
+        // Create 3D objects and render initial frame
+        createSceneObjects();
+        renderFrame(0);
+
+        document.getElementById('recording-indicator').style.display = 'none';
+    } catch (err) {
+        console.error('Failed to load run:', err);
+        document.getElementById('recording-indicator').style.display = 'none';
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// THREE.JS SCENE OBJECTS
+// ═══════════════════════════════════════════════════════════════════════
+
+function createSceneObjects() {
+    // Remove old objects
+    if (SIM.spotMesh) SIM.scene.remove(SIM.spotMesh);
+    if (SIM.driverMesh) SIM.scene.remove(SIM.driverMesh);
+
+    if (!SIM.meta) return;
+
+    const spots = SIM.meta.spots || [];
+
+    // ── Parking Spots (InstancedMesh — flat boxes) ──────────────
+    const spotGeo = new THREE.BoxGeometry(1.4, 0.3, 2.0);
+    const spotMat = new THREE.MeshStandardMaterial({
+        color: COLORS.spotFree,
+        roughness: 0.4,
+        metalness: 0.3,
+        emissive: COLORS.spotFree,
+        emissiveIntensity: 0.15,
+    });
+    SIM.spotMesh = new THREE.InstancedMesh(spotGeo, spotMat, spots.length);
+    SIM.spotMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    SIM.spotMesh._spotData = spots;
+    SIM.spotMesh.castShadow = true;
+
+    const dummy = new THREE.Object3D();
+    spots.forEach((s, i) => {
+        dummy.position.set(s.x, 0.15, s.y);
+        dummy.updateMatrix();
+        SIM.spotMesh.setMatrixAt(i, dummy.matrix);
+    });
+    SIM.spotMesh.instanceMatrix.needsUpdate = true;
+    SIM.scene.add(SIM.spotMesh);
+
+    // ── Drivers (InstancedMesh — BoxGeometry cars) ─────────────
+    const driverGeo = new THREE.BoxGeometry(0.8, 0.4, 1.5);
+    const driverMat = new THREE.MeshStandardMaterial({
+        color: COLORS.searching,
+        roughness: 0.3,
+        metalness: 0.4,
+        emissive: COLORS.searching,
+        emissiveIntensity: 0.25,
+    });
+    SIM.driverMesh = new THREE.InstancedMesh(driverGeo, driverMat, 1000);
+    SIM.driverMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    SIM.driverMesh.castShadow = true;
+    SIM.scene.add(SIM.driverMesh);
+
+    // ── Zone Labels (Sprite-based) ──────────────────────────────
+    // Remove existing sprites
+    SIM.scene.children = SIM.scene.children.filter(c => !(c.isSprite && c.name === ''));
+
+    const zones = {};
+    spots.forEach(s => {
+        if (!zones[s.zone]) zones[s.zone] = { sumX: 0, sumY: 0, count: 0 };
+        zones[s.zone].sumX += s.x;
+        zones[s.zone].sumY += s.y;
+        zones[s.zone].count++;
+    });
+    Object.entries(zones).forEach(([zone, data]) => {
+        const cx = data.sumX / data.count;
+        const cy = data.sumY / data.count;
+        const label = makeTextSprite(`Zone ${zone}`, { fontSize: 24 });
+        label.position.set(cx, 5, cy);
+        SIM.scene.add(label);
+    });
+}
+
+function makeTextSprite(text, opts = {}) {
+    const fontSize = opts.fontSize || 20;
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.font = `${fontSize}px monospace`;
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.textAlign = 'center';
+    ctx.fillText(text, 128, 40);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(8, 2, 1);
+    return sprite;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// DRIVER MESH UPDATE (using computed display positions)
+// ═══════════════════════════════════════════════════════════════════════
+
+function updateDriverMesh() {
+    if (!SIM.driverMesh) return;
+    if (!SIM.frames.length || !SIM.meta) return;
+
+    const frame = SIM.frames[SIM.currentTick];
+    if (!frame || !frame.drivers) return;
+
+    const drivers = frame.drivers;
+    const count = Math.min(drivers.length, 1000);
+    const clock = performance.now() * 0.001;
+
+    const dummy = new THREE.Object3D();
+    const color = new THREE.Color();
+
+    for (let i = 0; i < count; i++) {
+        const d = drivers[i];
+        const dp = SIM.displayPositions.get(d.id);
+
+        let x, z, y, angle;
+
+        if (dp) {
+            x = dp.x;
+            z = dp.z;
+            angle = dp.rotation;
+        } else {
+            // Fallback: use raw position
+            x = d.x;
+            z = d.y;
+            angle = 0;
+        }
+
+        // Height based on state
+        if (d.s === 2) {
+            y = 0.45;       // parked: on ground
+        } else if (d.s === 1) {
+            y = 1.0;        // assigned: mid
+        } else {
+            y = 0.7;        // searching: above road
+        }
+
+        // Emissive pulse for moving cars
+        let emissiveIntensity = 0.15;
+        if (d.s === 0 || d.s === 1) {
+            emissiveIntensity = 0.2 + Math.sin(clock * 3 + d.id) * 0.1;
+        }
+
+        dummy.position.set(x, y, z);
+        dummy.rotation.set(0, angle, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        SIM.driverMesh.setMatrixAt(i, dummy.matrix);
+
+        // Color by state
+        const stateName = STATE_NAMES[d.s] || 'searching';
+        color.set(COLORS[stateName] || COLORS.searching);
+        SIM.driverMesh.setColorAt(i, color);
+    }
+
+    // Hide remaining instances
+    dummy.position.set(-100, -100, -100);
+    dummy.scale.set(0, 0, 0);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    for (let i = count; i < 1000; i++) {
+        SIM.driverMesh.setMatrixAt(i, dummy.matrix);
+    }
+
+    SIM.driverMesh.instanceMatrix.needsUpdate = true;
+    if (SIM.driverMesh.instanceColor) SIM.driverMesh.instanceColor.needsUpdate = true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FRAME RENDERING
+// ═══════════════════════════════════════════════════════════════════════
+
+function renderFrame(frameIdx) {
+    if (!SIM.frames.length || !SIM.meta) return;
+    frameIdx = Math.max(0, Math.min(frameIdx, SIM.frames.length - 1));
+    SIM.currentTick = frameIdx;
+
+    const frame = SIM.frames[frameIdx];
+    const spots = SIM.meta.spots || [];
+
+    // ── Compute display positions for all active drivers ──────
+    computeDisplayPositions(frameIdx);
+
+    // ── Update Parking Spots Colors ────────────────────────────
+    if (SIM.spotMesh && frame) {
+        const occupiedIds = new Set();
+        (frame.drivers || []).forEach(d => {
+            if (d.sid !== null && (d.s === 1 || d.s === 2)) {
+                occupiedIds.add(d.sid);
+            }
+        });
+
+        const spotColor = new THREE.Color();
+        const dummy = new THREE.Object3D();
+        spots.forEach((s, i) => {
+            const isOccupied = occupiedIds.has(s.id);
+            spotColor.set(isOccupied ? COLORS.spotOcc : COLORS.spotFree);
+            SIM.spotMesh.setColorAt(i, spotColor);
+            dummy.position.set(s.x, isOccupied ? 0.35 : 0.15, s.y);
+            dummy.scale.set(1, isOccupied ? 1.5 : 1, 1);
+            dummy.updateMatrix();
+            SIM.spotMesh.setMatrixAt(i, dummy.matrix);
+        });
+        SIM.spotMesh.instanceMatrix.needsUpdate = true;
+        if (SIM.spotMesh.instanceColor) SIM.spotMesh.instanceColor.needsUpdate = true;
+    }
+
+    // ── Update driver mesh with display positions ──────────────
+    updateDriverMesh();
+
+    // ── KPIs ───────────────────────────────────────────────────
+    updateKPIs(frame);
+
+    // ── Map Markers ────────────────────────────────────────────
+    if (SIM.mode === 'map' && SIM.mapInitialized) {
+        updateMapMarkers(frame);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// KPI UPDATES
+// ═══════════════════════════════════════════════════════════════════════
+
+function updateKPIs(frame) {
+    if (!frame) return;
+    const kpi = frame.kpi || {};
+    const drivers = frame.drivers || [];
+
+    let searching = 0, assigned = 0, parked = 0;
+    drivers.forEach(d => {
+        if (d.s === 0) searching++;
+        else if (d.s === 1) assigned++;
+        else if (d.s === 2) parked++;
+    });
+
+    document.getElementById('kpi-tick').textContent = frame.t;
+    document.getElementById('kpi-total').textContent = drivers.length;
+    document.getElementById('kpi-searching').textContent = searching;
+    document.getElementById('kpi-assigned').textContent = assigned;
+    document.getElementById('kpi-parked').textContent = parked;
+    document.getElementById('kpi-occ').textContent = `${kpi.occ || 0} / ${SIM.meta.num_spots}`;
+    document.getElementById('kpi-failed').textContent = kpi.fail || 0;
+
+    const totalArr = (kpi.succ || 0) + (kpi.fail || 0);
+    const rsr = totalArr > 0 ? ((kpi.succ / totalArr) * 100).toFixed(1) : '0.0';
+    document.getElementById('kpi-rsr').textContent = rsr + '%';
+
+    document.getElementById('tick-display').textContent = `T: ${frame.t} / ${SIM.frames.length - 1}`;
+
+    // PST distribution mini-chart
+    SIM.pstHistory.push({ tick: frame.t, searching: searching, parked: parked });
+    if (SIM.pstHistory.length > 100) SIM.pstHistory.shift();
+    drawPSTChart();
+}
+
+function drawPSTChart() {
+    const ctx = SIM.chartCtx;
+    if (!ctx) return;
+
+    const canvas = ctx.canvas;
+    const w = canvas.width = canvas.clientWidth * 2;
+    const h = canvas.height = canvas.clientHeight * 2;
+    ctx.clearRect(0, 0, w, h);
+
+    const data = SIM.pstHistory;
+    if (data.length < 2) return;
+
+    const maxVal = Math.max(1, ...data.map(d => d.searching), ...data.map(d => d.parked));
+
+    // Searching (amber)
+    ctx.beginPath();
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 2;
+    data.forEach((d, i) => {
+        const x = (i / (data.length - 1)) * w;
+        const y = h - (d.searching / maxVal) * (h - 10) - 5;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Parked (green)
+    ctx.beginPath();
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 2;
+    data.forEach((d, i) => {
+        const x = (i / (data.length - 1)) * w;
+        const y = h - (d.parked / maxVal) * (h - 10) - 5;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Labels
+    ctx.font = '16px monospace';
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillText('Searching', 5, 16);
+    ctx.fillStyle = '#22c55e';
+    ctx.fillText('Parked', 80, 16);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// MAP VIEW (Leaflet)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── Coordinate Conversion: grid (0-100) → lat/lon ───────────────────
+function gridToLatLng(gridX, gridY) {
+    const city = SIM.meta && SIM.meta.city;
+    const bounds = city ? city.bounds : { lat_min: 3.135, lat_max: 3.170, lon_min: 101.685, lon_max: 101.730 };
+    const gridW = (SIM.meta && SIM.meta.grid_width)  || 100;
+    const gridH = (SIM.meta && SIM.meta.grid_height) || 100;
+    const lat = bounds.lat_min + (gridY / gridH) * (bounds.lat_max - bounds.lat_min);
+    const lon = bounds.lon_min + (gridX / gridW) * (bounds.lon_max - bounds.lon_min);
+    return [lat, lon];
+}
+
+// ── City Auto-Detect ────────────────────────────────────────────────
+function getCityBounds() {
+    const city = SIM.meta && SIM.meta.city;
+    if (city && city.bounds) return city.bounds;
+    return { lat_min: 3.135, lat_max: 3.170, lon_min: 101.685, lon_max: 101.730 };
+}
+
+function getCityCenter() {
+    const city = SIM.meta && SIM.meta.city;
+    if (city && city.center) return [city.center.lat, city.center.lon];
+    return [3.152, 101.710];
+}
+
+// ── Initialize Map ──────────────────────────────────────────────────
+function initMap() {
+    if (SIM.mapInitialized) return;
+
+    const container = document.getElementById('map-container');
+    const center = getCityCenter();
+    SIM.map = L.map(container, { zoomControl: true }).setView(center, 14);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19,
+    }).addTo(SIM.map);
+
+    // Create layer groups (ordered by draw priority)
+    SIM.mapGridLayer  = L.layerGroup().addTo(SIM.map);
+    SIM.mapZoneLayer  = L.layerGroup().addTo(SIM.map);
+    SIM.mapSpotLayer  = L.layerGroup().addTo(SIM.map);
+    SIM.mapDriverLayer = L.layerGroup().addTo(SIM.map);
+
+    SIM.mapInitialized = true;
+
+    // Fit to city bounds
+    const b = getCityBounds();
+    SIM.map.fitBounds([
+        [b.lat_min, b.lon_min],
+        [b.lat_max, b.lon_max]
+    ], { padding: [20, 20] });
+
+    // Draw grid overlay + road network
+    drawGridOverlay();
+
+    // Draw parking zones from city config
+    drawParkingZones();
+
+    // Draw parking spots
+    drawParkingSpots();
+
+    // Add legend
+    addMapLegend();
+}
+
+// ── Grid Overlay ────────────────────────────────────────────────────
+function drawGridOverlay() {
+    const b = getCityBounds();
+    const gridW = (SIM.meta && SIM.meta.grid_width)  || 100;
+    const gridH = (SIM.meta && SIM.meta.grid_height) || 100;
+    const latSpan = b.lat_max - b.lat_min;
+    const lonSpan = b.lon_max - b.lon_min;
+
+    // Boundary rectangle (faint)
+    L.polygon([
+        [b.lat_min, b.lon_min],
+        [b.lat_min, b.lon_max],
+        [b.lat_max, b.lon_max],
+        [b.lat_max, b.lon_min]
+    ], {
+        color: 'white',
+        weight: 1.5,
+        opacity: 0.2,
+        fillColor: 'white',
+        fillOpacity: 0.02,
+        interactive: false,
+    }).addTo(SIM.mapGridLayer);
+
+    // Fine grid lines (every 10th line for clarity)
+    const step = 10;
+    for (let gx = step; gx < gridW; gx += step) {
+        const lon = b.lon_min + (gx / gridW) * lonSpan;
+        const isMajor = (gx % 50 === 0);
+        L.polyline([
+            [b.lat_min, lon],
+            [b.lat_max, lon]
+        ], {
+            color: 'white',
+            weight: isMajor ? 1 : 0.5,
+            opacity: isMajor ? 0.18 : 0.1,
+            interactive: false,
+        }).addTo(SIM.mapGridLayer);
+    }
+    for (let gy = step; gy < gridH; gy += step) {
+        const lat = b.lat_min + (gy / gridH) * latSpan;
+        const isMajor = (gy % 50 === 0);
+        L.polyline([
+            [lat, b.lon_min],
+            [lat, b.lon_max]
+        ], {
+            color: 'white',
+            weight: isMajor ? 1 : 0.5,
+            opacity: isMajor ? 0.18 : 0.1,
+            interactive: false,
+        }).addTo(SIM.mapGridLayer);
+    }
+
+    // Road network (every 20th grid line, thicker)
+    const roadStep = 20;
+    for (let gx = roadStep; gx < gridW; gx += roadStep) {
+        const lon = b.lon_min + (gx / gridW) * lonSpan;
+        // Road surface
+        L.polyline([
+            [b.lat_min, lon],
+            [b.lat_max, lon]
+        ], {
+            color: '#555',
+            weight: 4,
+            opacity: 0.3,
+            interactive: false,
+        }).addTo(SIM.mapGridLayer);
+        // Lane marking (dashed center)
+        L.polyline([
+            [b.lat_min, lon],
+            [b.lat_max, lon]
+        ], {
+            color: '#888',
+            weight: 1,
+            opacity: 0.25,
+            dashArray: '8 12',
+            interactive: false,
+        }).addTo(SIM.mapGridLayer);
+    }
+    for (let gy = roadStep; gy < gridH; gy += roadStep) {
+        const lat = b.lat_min + (gy / gridH) * latSpan;
+        L.polyline([
+            [lat, b.lon_min],
+            [lat, b.lon_max]
+        ], {
+            color: '#555',
+            weight: 4,
+            opacity: 0.3,
+            interactive: false,
+        }).addTo(SIM.mapGridLayer);
+        L.polyline([
+            [lat, b.lon_min],
+            [lat, b.lon_max]
+        ], {
+            color: '#888',
+            weight: 1,
+            opacity: 0.25,
+            dashArray: '8 12',
+            interactive: false,
+        }).addTo(SIM.mapGridLayer);
+    }
+}
+
+// ── Parking Zones ───────────────────────────────────────────────────
+function drawParkingZones() {
+    const city = SIM.meta && SIM.meta.city;
+    let zones = city && city.parking_zones;
+
+    // Fallback: generate zones from spot cluster centroids
+    if (!zones || !zones.length) {
+        zones = generateZonesFromSpots();
+    }
+
+    zones.forEach(zone => {
+        // Outer glow circle
+        L.circle([zone.lat, zone.lon], {
+            radius: 200,
+            color: '#8b5cf6',
+            weight: 2,
+            opacity: 0.6,
+            fillColor: '#8b5cf6',
+            fillOpacity: 0.12,
+            interactive: false,
+        }).addTo(SIM.mapZoneLayer);
+
+        // Zone marker
+        const marker = L.circleMarker([zone.lat, zone.lon], {
+            radius: 10,
+            fillColor: '#8b5cf6',
+            fillOpacity: 0.85,
+            color: '#c4b5fd',
+            weight: 2,
+        }).addTo(SIM.mapZoneLayer);
+
+        marker.bindPopup(
+            `<div style="font-family:system-ui,sans-serif; min-width:140px;">
+                <div style="font-weight:700; color:#8b5cf6; font-size:14px; margin-bottom:4px;">
+                    ${zone.name}
+                </div>
+                <div style="color:#64748b; font-size:12px; line-height:1.6;">
+                    Capacity: <b>${zone.capacity || '—'}</b> spots
+                    ${zone.price_per_hour ? '<br>Price: <b>RM ' + zone.price_per_hour + '</b>/hr' : ''}
+                </div>
+            </div>`
+        );
+    });
+}
+
+function generateZonesFromSpots() {
+    if (!SIM.meta || !SIM.meta.spots) return [];
+    const spots = SIM.meta.spots;
+    // Group spots by zone field
+    const groups = {};
+    spots.forEach(s => {
+        const z = s.zone || 'default';
+        if (!groups[z]) groups[z] = { spots: [], totalX: 0, totalY: 0 };
+        groups[z].spots.push(s);
+        groups[z].totalX += s.x;
+        groups[z].totalY += s.y;
+    });
+    return Object.entries(groups).map(([name, g]) => ({
+        name: name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, ' '),
+        lat: gridToLatLng(g.totalX / g.spots.length, g.totalY / g.spots.length)[0],
+        lon: gridToLatLng(g.totalX / g.spots.length, g.totalY / g.spots.length)[1],
+        capacity: g.spots.length,
+    }));
+}
+
+// ── Parking Spots ───────────────────────────────────────────────────
+function drawParkingSpots() {
+    SIM.mapSpotMarkerMap = {};
+    if (!SIM.meta || !SIM.meta.spots) return;
+
+    SIM.meta.spots.forEach(s => {
+        const [lat, lon] = gridToLatLng(s.x, s.y);
+        const marker = L.circleMarker([lat, lon], {
+            radius: 4,
+            fillColor: '#6366f1',
+            fillOpacity: 0.8,
+            color: '#818cf8',
+            weight: 1,
+        }).addTo(SIM.mapSpotLayer);
+
+        marker.bindPopup(
+            `<div style="font-family:system-ui,sans-serif; min-width:120px;">
+                <div style="font-weight:700; color:#6366f1; font-size:13px;">
+                    Spot #${s.id}
+                </div>
+                <div style="color:#64748b; font-size:12px; line-height:1.6;">
+                    Zone: <b>${s.zone || '—'}</b><br>
+                    Price: <b>RM ${s.price || '—'}</b>/hr
+                </div>
+            </div>`
+        );
+
+        SIM.mapSpotMarkerMap[s.id] = marker;
+    });
+}
+
+// ── Spot Occupancy Update ───────────────────────────────────────────
+function updateSpotOccupancy(frame) {
+    if (!frame || !SIM.meta || !SIM.meta.spots) return;
+
+    // Build set of occupied spot IDs from current frame drivers
+    const occupiedIds = new Set();
+    (frame.drivers || []).forEach(d => {
+        if (d.sid !== null && (d.s === 1 || d.s === 2)) {
+            occupiedIds.add(d.sid);
+        }
+    });
+
+    // Update each spot marker color
+    SIM.meta.spots.forEach(s => {
+        const marker = SIM.mapSpotMarkerMap[s.id];
+        if (!marker) return;
+        const isOccupied = occupiedIds.has(s.id);
+        marker.setStyle({
+            fillColor: isOccupied ? '#ef4444' : '#6366f1',
+            color: isOccupied ? '#fca5a5' : '#818cf8',
+        });
+    });
+}
+
+// ── Map Legend ───────────────────────────────────────────────────────
+function addMapLegend() {
+    if (SIM.mapLegend) return;
+
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = function () {
+        const div = L.DomUtil.create('div', 'leaflet-control');
+        div.style.cssText = 'background:rgba(15,20,35,0.92);border:1px solid #3b82f6;border-radius:8px;padding:10px 12px;color:#e2e8f0;font-family:system-ui,sans-serif;font-size:11px;line-height:1.8;box-shadow:0 4px 12px rgba(0,0,0,0.5);backdrop-filter:blur(4px);';
+
+        function dot(color, label) {
+            return `<div style="display:flex;align-items:center;gap:6px;">
+                <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};border:1px solid rgba(255,255,255,0.3);"></span>
+                <span>${label}</span>
+            </div>`;
+        }
+
+        div.innerHTML =
+            `<div style="font-weight:700;margin-bottom:4px;color:#60a5fa;">Legend</div>` +
+            dot('#f59e0b', 'Searching') +
+            dot('#3b82f6', 'Assigned') +
+            dot('#22c55e', 'Parked') +
+            `<hr style="border:none;border-top:1px solid #334155;margin:4px 0;">` +
+            dot('#6366f1', 'Spot Free') +
+            dot('#ef4444', 'Spot Occupied') +
+            `<hr style="border:none;border-top:1px solid #334155;margin:4px 0;">` +
+            dot('#8b5cf6', 'Parking Zone');
+
+        return div;
+    };
+    legend.addTo(SIM.map);
+    SIM.mapLegend = legend;
+}
+
+// ── Update Map Markers (per frame) ──────────────────────────────────
+function updateMapMarkers(frame) {
+    if (!SIM.map || !frame) return;
+    if (!SIM.meta) return;
+
+    // Update spot occupancy colors
+    updateSpotOccupancy(frame);
+
+    // Build set of driver IDs present in this frame
+    const frameDriverIds = new Set();
+    const drivers = frame.drivers || [];
+
+    // Compute which drivers are in this frame and update/reuse markers
+    drivers.forEach(d => {
+        frameDriverIds.add(d.id);
+
+        const dp = SIM.displayPositions.get(d.id);
+        const posX = dp ? dp.x : d.x;
+        const posY = dp ? dp.y : d.y;
+        const [lat, lon] = gridToLatLng(posX, posY);
+
+        const stateColors = {
+            0: '#f59e0b',   // searching – amber
+            1: '#3b82f6',   // assigned  – blue
+            2: '#22c55e',   // parked    – green
+            3: '#6b7280',   // departed  – gray
+        };
+        const mapColor = stateColors[d.s] || '#f59e0b';
+        const stateLabels = ['Searching', 'Assigned', 'Parked', 'Departed'];
+
+        let marker = SIM.mapMarkers[d.id];
+        if (marker) {
+            // Reuse existing marker — just update position + color
+            marker.setLatLng([lat, lon]);
+            marker.setStyle({
+                fillColor: mapColor,
+                color: '#ffffff',
+            });
+            // Update popup content
+            marker.setPopupContent(
+                `<div style="font-family:system-ui,sans-serif; min-width:130px;">
+                    <div style="font-weight:700; color:${mapColor}; font-size:13px;">
+                        Driver #${d.id}
+                    </div>
+                    <div style="color:#64748b; font-size:12px; line-height:1.6;">
+                        State: <b style="color:${mapColor}">${stateLabels[d.s] || 'Unknown'}</b><br>
+                        ${d.sid !== null && d.sid !== undefined ? 'Spot: <b style="color:#c084fc">#' + d.sid + '</b>' : ''}
+                    </div>
+                </div>`
+            );
+        } else {
+            // Create new marker
+            marker = L.circleMarker([lat, lon], {
+                radius: 5,
+                fillColor: mapColor,
+                fillOpacity: 0.9,
+                color: '#ffffff',
+                weight: 1.5,
+                zIndexOffset: 1000,
+            }).addTo(SIM.mapDriverLayer);
+
+            marker.bindPopup(
+                `<div style="font-family:system-ui,sans-serif; min-width:130px;">
+                    <div style="font-weight:700; color:${mapColor}; font-size:13px;">
+                        Driver #${d.id}
+                    </div>
+                    <div style="color:#64748b; font-size:12px; line-height:1.6;">
+                        State: <b style="color:${mapColor}">${stateLabels[d.s] || 'Unknown'}</b><br>
+                        ${d.sid !== null && d.sid !== undefined ? 'Spot: <b style="color:#c084fc">#' + d.sid + '</b>' : ''}
+                    </div>
+                </div>`
+            );
+
+            SIM.mapMarkers[d.id] = marker;
+        }
+    });
+
+    // Remove markers for drivers no longer in the frame
+    for (const id in SIM.mapMarkers) {
+        if (!frameDriverIds.has(parseInt(id)) && !frameDriverIds.has(id)) {
+            SIM.mapDriverLayer.removeLayer(SIM.mapMarkers[id]);
+            delete SIM.mapMarkers[id];
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// MODE SWITCHING
+// ═══════════════════════════════════════════════════════════════════════
+
+function setMode(mode) {
+    SIM.mode = mode;
+    document.getElementById('mode-grid').classList.toggle('active', mode === 'grid');
+    document.getElementById('mode-map').classList.toggle('active', mode === 'map');
+
+    const threeWrap = document.getElementById('three-canvas-wrap');
+    const mapContainer = document.getElementById('map-container');
+
+    if (mode === 'grid') {
+        threeWrap.style.display = 'block';
+        mapContainer.style.display = 'none';
+    } else {
+        threeWrap.style.display = 'none';
+        mapContainer.style.display = 'block';
+        initMap();
+        if (SIM.frames.length) {
+            updateMapMarkers(SIM.frames[SIM.currentTick]);
+        }
+        setTimeout(() => SIM.map.invalidateSize(), 100);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PLAYBACK CONTROLS
+// ═══════════════════════════════════════════════════════════════════════
+
+function setupControls() {
+    const btnPlay = document.getElementById('btn-play');
+    const btnStart = document.getElementById('btn-start');
+    const btnEnd = document.getElementById('btn-end');
+    const btnPrev = document.getElementById('btn-prev');
+    const btnNext = document.getElementById('btn-next');
+    const slider = document.getElementById('tick-slider');
+    const speedSlider = document.getElementById('speed-slider');
+
+    btnPlay.addEventListener('click', () => {
+        SIM.playing = !SIM.playing;
+        btnPlay.textContent = SIM.playing ? '\u23F8' : '\u25B6';
+        btnPlay.classList.toggle('active', SIM.playing);
+    });
+
+    btnStart.addEventListener('click', () => {
+        renderFrame(0);
+        slider.value = 0;
+    });
+    btnEnd.addEventListener('click', () => {
+        const last = SIM.frames.length - 1;
+        renderFrame(last);
+        slider.value = last;
+    });
+
+    btnPrev.addEventListener('click', () => {
+        const newIdx = Math.max(0, SIM.currentTick - 1);
+        renderFrame(newIdx);
+        slider.value = newIdx;
+    });
+    btnNext.addEventListener('click', () => {
+        const newIdx = Math.min(SIM.frames.length - 1, SIM.currentTick + 1);
+        renderFrame(newIdx);
+        slider.value = newIdx;
+    });
+
+    slider.addEventListener('input', () => {
+        renderFrame(parseInt(slider.value));
+    });
+
+    speedSlider.addEventListener('input', () => {
+        SIM.speed = parseInt(speedSlider.value);
+        document.getElementById('speed-label').textContent = SIM.speed + 'x';
+    });
+
+    document.getElementById('run-select').addEventListener('change', (e) => {
+        loadRun(e.target.value);
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ANIMATION LOOP
+// ═══════════════════════════════════════════════════════════════════════
+
+let lastFrameTime = 0;
+function animate(timestamp) {
+    requestAnimationFrame(animate);
+
+    if (SIM.playing && SIM.frames.length) {
+        const interval = 1000 / SIM.speed;
+        if (timestamp - lastFrameTime > interval) {
+            let next = SIM.currentTick + 1;
+            if (next >= SIM.frames.length) {
+                next = 0;
+            }
+            renderFrame(next);
+            document.getElementById('tick-slider').value = next;
+            lastFrameTime = timestamp;
+        }
+    }
+
+    // Render with both WebGL and CSS2D
+    if (SIM.mode === 'grid') {
+        if (SIM.orbit) SIM.orbit.update();
+        if (SIM.renderer && SIM.scene && SIM.camera) {
+            SIM.renderer.render(SIM.scene, SIM.camera);
+        }
+        if (SIM.labelRenderer && SIM.scene && SIM.camera) {
+            updateTooltip();
+            SIM.labelRenderer.render(SIM.scene, SIM.camera);
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════════════════════════════
+
+document.addEventListener('DOMContentLoaded', () => {
+    initThreeJS();
+    setupControls();
+    requestAnimationFrame(animate);
+
+    // Auto-load first run if available
+    const select = document.getElementById('run-select');
+    if (select.options.length > 1) {
+        select.selectedIndex = 1;
+        loadRun(select.value);
+    }
+});
+</script>
+{% endblock %}
