@@ -22,6 +22,7 @@ output_fixed/
 run_exp.txt
 run_exp_py.txt
 run_exp_python.txt
+run_experiments_retry.txt
 test_write.txt
 SELECT*;
 
