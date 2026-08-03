@@ -1,0 +1,32 @@
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Runtime data, generated figures, and simulation outputs
+cache/
+output/
+output_fixed/
+*.sqlite
+*.sqlite3
+*.db
+
+# Temporary logs and local scratch files
+*.log
+*.tmp
+run_exp.txt
+run_exp_py.txt
+run_exp_python.txt
+test_write.txt
+SELECT*;
+
+# Local documentation and generated report artifacts
+docs/
+*.docx
+*.pdf
+*.pptx
