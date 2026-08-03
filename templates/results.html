@@ -150,17 +150,22 @@
 
 <script>
 /* Light polling — refresh if experiment just completed */
-setTimeout(function checkCompletion() {
-    fetch('/progress.json')
-        .then(r => r.json())
-        .then(state => {
-            if (state.status === 'completed') {
-                window.location.reload();
-            } else if (state.status === 'running') {
-                setTimeout(checkCompletion, 2000);
-            }
-        })
-        .catch(() => {});
-}, 2000);
+const initialStatus = {{ state.status|tojson }};
+{% if state.status == 'running' %}
+if (initialStatus === 'running') {
+    setTimeout(function checkCompletion() {
+        fetch('/progress.json')
+            .then(r => r.json())
+            .then(state => {
+                if (state.status === 'completed') {
+                    window.location.reload();
+                } else if (state.status === 'running') {
+                    setTimeout(checkCompletion, 2000);
+                }
+            })
+            .catch(() => {});
+    }, 2000);
+}
+{% endif %}
 </script>
 {% endblock %}

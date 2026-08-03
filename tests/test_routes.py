@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -540,3 +541,343 @@ def test_new_async_run_discards_rows_from_previous_run(tmp_path, monkeypatch):
     routes._run_experiment_async("", "", 1)
 
     assert routes.experiment_state["run_rows"] == [result]
+
+
+@pytest.mark.parametrize("status", ["completed", "running"])
+def test_results_polling_markup_reflects_experiment_status(tmp_path, monkeypatch, status):
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {"status": status, "progress_log": [], "run_rows": []},
+    )
+
+    body = create_app().test_client().get("/results").get_data(as_text=True)
+
+    poll_script = "setTimeout(function checkCompletion()"
+    if status == "completed":
+        assert poll_script not in body
+    else:
+        assert poll_script in body
+
+
+def test_visualization_discovers_recorded_run_metadata(tmp_path, monkeypatch):
+    frames_dir = tmp_path / "output" / "frames"
+    frames_dir.mkdir(parents=True)
+    metadata = {
+        "scenario": "high_demand",
+        "strategy": "auction",
+        "total_frames": 12,
+    }
+    (frames_dir / "run_17_meta.json").write_text(json.dumps(metadata))
+    (frames_dir / "run_17_frames.json").write_text(json.dumps([{"tick": 0}]))
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(frames_dir))
+
+    client = create_app().test_client()
+    visualize_body = client.get("/visualize").get_data(as_text=True)
+    discovered_runs = client.get("/api/viz/runs").get_json()
+
+    assert "run_17" in visualize_body
+    assert "12 frames" in visualize_body
+    assert discovered_runs == [{"run_id": "run_17", "meta": metadata}]
+
+
+def test_record_dashboard_experiment_saves_real_metadata_and_route_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(tmp_path / "output" / "frames"))
+
+    run_id = routes._record_dashboard_experiment(
+        scenario="low_demand",
+        strategy="greedy",
+        simulation_type="mesa",
+        city=None,
+        experiment_run_id=23,
+        config={
+            "grid": {"width": 20, "height": 20, "cell_size_meters": 10},
+            "parking": {"num_spots": 20, "num_zones": 4, "price_range": [1, 10]},
+            "demand": {
+                "arrival_rate_lambda": 0,
+                "parking_duration_mean_ticks": 8,
+                "parking_duration_std_ticks": 2,
+                "search_radius_cells": 30,
+                "max_search_duration_ticks": 6,
+            },
+            "simulation": {"total_ticks": 2, "warmup_ticks": 0, "random_seed": 42},
+            "strategy": "auction",
+        },
+    )
+
+    metadata_path = tmp_path / "output" / "frames" / f"{run_id}_meta.json"
+    frames_path = tmp_path / "output" / "frames" / f"{run_id}_frames.json"
+    assert run_id.startswith("run_dashboard_23")
+    assert metadata_path.is_file()
+    assert frames_path.is_file()
+    metadata = json.loads(metadata_path.read_text())
+    assert metadata["scenario"] == "low_demand"
+    assert metadata["strategy"] == "greedy"
+    assert metadata["dashboard_experiment_id"] == 23
+    assert metadata["visualization_run_id"] == run_id
+    assert json.loads(frames_path.read_text())
+    client = create_app().test_client()
+    assert run_id in client.get("/visualize").get_data(as_text=True)
+    assert client.get("/api/viz/runs").get_json()[0]["meta"] == metadata
+
+
+def test_frame_recorder_ids_do_not_collide_in_same_second(tmp_path, monkeypatch):
+    from model import ParkingModel
+    from recorder import FrameRecorder
+
+    config = {
+        "grid": {"width": 20, "height": 20, "cell_size_meters": 10},
+        "parking": {"num_spots": 20, "num_zones": 4, "price_range": [1, 10]},
+        "demand": {
+            "arrival_rate_lambda": 0,
+            "parking_duration_mean_ticks": 8,
+            "parking_duration_std_ticks": 2,
+            "search_radius_cells": 30,
+            "max_search_duration_ticks": 6,
+        },
+        "simulation": {"total_ticks": 1, "warmup_ticks": 0, "random_seed": 42},
+        "strategy": "auction",
+    }
+    monkeypatch.setattr("recorder.time.time", lambda: 1234)
+    first = FrameRecorder(ParkingModel(config_dict=config, strategy="auction"))
+    second = FrameRecorder(ParkingModel(config_dict=config, strategy="auction"))
+
+    first_id, _, _ = first.save(str(tmp_path))
+    second_id, _, _ = second.save(str(tmp_path))
+
+    assert first_id != second_id
+    assert (tmp_path / f"{first_id}_meta.json").is_file()
+    assert (tmp_path / f"{second_id}_meta.json").is_file()
+
+
+def test_frame_recorder_ids_are_unique_when_saves_race(tmp_path, monkeypatch):
+    from model import ParkingModel
+    from recorder import FrameRecorder
+
+    config = {
+        "grid": {"width": 8, "height": 8, "cell_size_meters": 10},
+        "parking": {"num_spots": 4, "num_zones": 2, "price_range": [1, 10]},
+        "demand": {"arrival_rate_lambda": 0, "parking_duration_mean_ticks": 8,
+                   "parking_duration_std_ticks": 2, "search_radius_cells": 30,
+                   "max_search_duration_ticks": 6},
+        "simulation": {"total_ticks": 1, "warmup_ticks": 0, "random_seed": 42},
+        "strategy": "auction",
+    }
+    monkeypatch.setattr("recorder.time.time", lambda: 1234)
+
+    def save_one():
+        recorder = FrameRecorder(ParkingModel(config_dict=config, strategy="auction"))
+        return recorder.save(str(tmp_path))[0]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        run_ids = list(executor.map(lambda _: save_one(), range(2)))
+
+    assert len(set(run_ids)) == 2
+    assert all((tmp_path / f"{run_id}_meta.json").is_file() for run_id in run_ids)
+    assert all((tmp_path / f"{run_id}_frames.json").is_file() for run_id in run_ids)
+
+
+def test_viz_record_saves_and_returns_discoverable_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(tmp_path / "frames"))
+    response = create_app().test_client().post(
+        "/api/viz/record",
+        json={
+            "strategy": "greedy",
+            "total_ticks": 2,
+            "arrival_rate": 0,
+            "grid_width": 8,
+            "grid_height": 8,
+            "num_spots": 4,
+            "num_zones": 2,
+            "warmup_ticks": 0,
+        },
+    )
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["run_id"] != "unknown"
+    run_id = payload["run_id"]
+    metadata = create_app().test_client().get(f"/api/viz/meta/{run_id}").get_json()
+    frames = create_app().test_client().get(f"/api/viz/frames/{run_id}").get_json()
+    runs = create_app().test_client().get("/api/viz/runs").get_json()
+    assert metadata["visualization_run_id"] == run_id
+    assert metadata["strategy"] == "greedy"
+    assert frames
+    assert any(run["run_id"] == run_id for run in runs)
+
+
+def test_viz_record_uses_run_id_from_simulation_save(tmp_path, monkeypatch):
+    import model
+    import recorder
+
+    save_calls = []
+
+    class FakeRecorder:
+        def __init__(self, model, city_config=None, record_interval=1):
+            self.frames = [{"t": 1}]
+
+        def save(self, output_dir="output/frames"):
+            save_calls.append(output_dir)
+            return "run_from_simulation", "meta.json", "frames.json"
+
+    class FakeModel:
+        def __init__(self, config_dict, strategy):
+            self.recorder = None
+
+        def run_simulation(self, output_dir="output/frames"):
+            self._frame_run_id, _, _ = self.recorder.save(output_dir)
+            return {"frame_run_id": self._frame_run_id}
+
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(tmp_path / "frames"))
+    monkeypatch.setattr(model, "ParkingModel", FakeModel)
+    monkeypatch.setattr(recorder, "FrameRecorder", FakeRecorder)
+
+    response = create_app().test_client().post(
+        "/api/viz/record",
+        json={"total_ticks": 1},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "completed",
+        "frames": 1,
+        "run_id": "run_from_simulation",
+    }
+    assert save_calls == [str(tmp_path / "frames")]
+
+
+def test_results_error_state_does_not_emit_polling_bootstrap(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {"status": "error", "error_message": "simulation failed", "progress_log": []},
+    )
+
+    body = create_app().test_client().get("/results").get_data(as_text=True)
+
+    assert "setTimeout(function checkCompletion()" not in body
+
+
+def test_reset_clears_run_identifiers_with_consistent_state(monkeypatch):
+    monkeypatch.setattr(routes, "experiment_state", {"status": "completed", "run_id": 8})
+
+    response = create_app().test_client().post("/reset")
+
+    assert response.status_code == 302
+    assert routes.experiment_state["run_id"] is None
+    assert routes.experiment_state["visualization_run_id"] is None
+
+
+def test_recording_failure_keeps_completed_experiment_results(tmp_path, monkeypatch):
+    result = {
+        "scenario": "low_demand", "strategy": "auction", "replication": 0,
+        "total_arrivals": 1, "total_successful": 1, "total_failed": 0,
+        "mean_pst": 1.0, "std_por": 0.1, "rsr": 100.0,
+        "mean_utility": 0.5, "tfi": 0.0, "sumo_connected": False, "_timeseries": [],
+    }
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_batch(self, **kwargs):
+            kwargs["progress_callback"](1, 1, "low_demand", "auction", 0, result)
+
+        def compute_summary(self, rows):
+            return [{"scenario": "low_demand", "strategy": "auction", "n_replications": 1}]
+
+    class FakeAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def load_results(self, csv_file=None):
+            pass
+
+        def generate_all(self):
+            pass
+
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "ExperimentRunner", FakeRunner)
+    monkeypatch.setattr(routes, "_record_dashboard_experiment", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("recorder unavailable")))
+    import analysis
+    monkeypatch.setattr(analysis, "SimulationAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr(routes, "experiment_state", {
+        "status": "idle", "run_rows": [], "progress_log": [],
+        "visualization_run_id": "run_from_previous_experiment",
+    })
+
+    routes._run_experiment_async("", "", 1)
+
+    conn = routes._get_db()
+    stored = conn.execute("SELECT status, results_path, progress_json FROM experiments WHERE id=1").fetchone()
+    conn.close()
+    assert stored["status"] == "completed"
+    assert os.path.isfile(stored["results_path"])
+    assert "Visualization recording failed: recorder unavailable" in stored["progress_json"]
+    assert json.loads(stored["progress_json"])["visualization_run_id"] is None
+    assert routes.experiment_state["visualization_run_id"] is None
+
+
+def test_async_success_persists_visualization_run_and_route_discovery(tmp_path, monkeypatch):
+    result = {
+        "scenario": "low_demand", "strategy": "auction", "replication": 0,
+        "total_arrivals": 0, "total_successful": 0, "total_failed": 0,
+        "mean_pst": 0, "std_por": 0, "rsr": 0,
+        "mean_utility": 0, "tfi": 0, "sumo_connected": False, "_timeseries": [],
+    }
+
+    class FakeRunner:
+        base_config = {
+            "grid": {"width": 20, "height": 20, "cell_size_meters": 10},
+            "parking": {"num_spots": 20, "num_zones": 4, "price_range": [1, 10]},
+            "demand": {
+                "arrival_rate_lambda": 0,
+                "parking_duration_mean_ticks": 8,
+                "parking_duration_std_ticks": 2,
+                "search_radius_cells": 30,
+                "max_search_duration_ticks": 6,
+            },
+            "simulation": {"total_ticks": 1, "warmup_ticks": 0, "random_seed": 42},
+            "strategy": "auction",
+        }
+        scenarios_config = {"scenarios": {}}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def run_batch(self, **kwargs):
+            kwargs["progress_callback"](1, 1, "low_demand", "auction", 0, result)
+
+        def compute_summary(self, rows):
+            return [{"scenario": "low_demand", "strategy": "auction", "n_replications": 1}]
+
+    class FakeAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def load_results(self, csv_file=None):
+            pass
+
+        def generate_all(self):
+            pass
+
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "ExperimentRunner", FakeRunner)
+    monkeypatch.setattr(routes, "experiment_state", {"status": "idle", "run_rows": [], "progress_log": []})
+    import analysis
+    monkeypatch.setattr(analysis, "SimulationAnalyzer", FakeAnalyzer)
+
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(tmp_path / "output" / "frames"))
+    routes._run_experiment_async("low_demand", "auction", 1)
+
+    stored = routes._get_db().execute("SELECT progress_json FROM experiments WHERE id=1").fetchone()
+    progress = json.loads(stored["progress_json"])
+    visualization_run_id = progress["visualization_run_id"]
+    assert visualization_run_id
+    assert routes.experiment_state["visualization_run_id"] == visualization_run_id
+    assert create_app().test_client().get("/api/viz/runs").get_json()[0]["run_id"] == visualization_run_id

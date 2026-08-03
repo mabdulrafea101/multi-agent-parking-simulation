@@ -1,5 +1,6 @@
 """Flask routes for the Multi-Agent Parking Simulation dashboard."""
 import csv
+import copy
 import json
 import os
 import sqlite3
@@ -123,6 +124,7 @@ experiment_state = {
     "run_rows": [],
     "error_message": None,
     "run_id": None,
+    "visualization_run_id": None,
 }
 
 experiment_lock = threading.Lock()
@@ -335,6 +337,7 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
                 "run_rows": [],
                 "returncode": None,
                 "run_id": run_id,
+                "visualization_run_id": None,
             }
         )
 
@@ -442,6 +445,33 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
         summary_rows = runner.compute_summary(summary_input)
         _write_summary_csv(os.path.join(run_output_dir, "summary_statistics.csv"), summary_rows)
 
+        recording_scenario = scenario or (run_rows[0].get("scenario") if run_rows else None)
+        recording_strategy = strategy or (run_rows[0].get("strategy") if run_rows else None)
+        visualization_run_id = None
+        try:
+            visualization_run_id = _record_dashboard_experiment(
+                scenario=recording_scenario,
+                strategy=recording_strategy,
+                simulation_type=simulation_type,
+                city=city,
+                experiment_run_id=run_id,
+                config=getattr(runner, "base_config", None),
+                scenario_config=(
+                    getattr(runner, "scenarios_config", {}).get("scenarios", {}).get(recording_scenario, {})
+                    if recording_scenario else {}
+                ),
+            )
+            with experiment_lock:
+                experiment_state["visualization_run_id"] = visualization_run_id
+                experiment_state["progress_log"].append(
+                    f"Visualization recording saved as {visualization_run_id}."
+                )
+        except Exception as exc:
+            with experiment_lock:
+                experiment_state["progress_log"].append(
+                    f"Visualization recording failed: {exc}"
+                )
+
         run_figures_dir = os.path.join(SIMULATION_DIR, "output", "figures", f"run_{run_id}")
         os.makedirs(run_figures_dir, exist_ok=True)
 
@@ -459,6 +489,7 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
                 "completed_runs": experiment_state["completed_runs"],
                 "total_runs": total_runs,
                 "log": list(experiment_state["progress_log"]),
+                "visualization_run_id": visualization_run_id,
             }
         _update_experiment_record(
             run_id,
@@ -799,17 +830,73 @@ def reset():
             "scenario": None,
             "strategy": None,
             "replications": None,
+            "simulation_type": "mesa",
+            "city": None,
             "total_runs": None,
             "completed_runs": 0,
             "progress_log": [],
             "error_message": None,
             "run_rows": [],
+            "run_id": None,
+            "visualization_run_id": None,
         }
     return redirect(url_for("dashboard.index"))
 
 
 # ── Visualization endpoints ─────────────────────────────────────────────
 VIZ_FRAMES_DIR = os.path.join(SIMULATION_DIR, "output", "frames")
+
+
+def _record_dashboard_experiment(
+    scenario,
+    strategy,
+    simulation_type="mesa",
+    city=None,
+    experiment_run_id=None,
+    config=None,
+    scenario_config=None,
+):
+    """Record one completed dashboard configuration for visualization."""
+    from engine.cities import get_city_config
+    from model import ParkingModel
+    from recorder import FrameRecorder
+
+    if config is None:
+        with open(os.path.join(SIMULATION_DIR, "config", "default_params.json")) as file:
+            config = json.load(file)
+    config = copy.deepcopy(config)
+    scenario_config = scenario_config or {}
+    if scenario_config.get("arrival_rate_lambda") is not None:
+        config.setdefault("demand", {})["arrival_rate_lambda"] = scenario_config["arrival_rate_lambda"]
+    config["strategy"] = strategy
+
+    city_config = None
+    if city:
+        city_config = get_city_config(city)
+
+    model = ParkingModel(
+        config_dict=config,
+        strategy=strategy,
+        simulation_type=simulation_type,
+        city=city,
+    )
+    recorder = FrameRecorder(model, city_config=city_config, record_interval=1)
+    model.recorder = recorder
+    for _ in range(model.total_ticks):
+        model.step()
+    recorder.capture_tick()
+    requested_run_id = (
+        f"run_dashboard_{experiment_run_id}" if experiment_run_id is not None else None
+    )
+    run_id, meta_path, _ = recorder.save(VIZ_FRAMES_DIR, run_id=requested_run_id)
+
+    with open(meta_path, "r") as file:
+        metadata = json.load(file)
+    metadata["scenario"] = scenario
+    metadata["dashboard_experiment_id"] = experiment_run_id
+    with open(meta_path, "w") as file:
+        json.dump(metadata, file)
+    return run_id
 
 
 @bp.route("/visualize")
@@ -881,11 +968,16 @@ def viz_record():
     city = data.get("city", None)
     total_ticks = data.get("total_ticks", 200)
     arrival_rate = data.get("arrival_rate", 5)
+    grid_width = data.get("grid_width", 100)
+    grid_height = data.get("grid_height", 100)
+    num_spots = data.get("num_spots", 200)
+    num_zones = data.get("num_zones", 8)
+    warmup_ticks = data.get("warmup_ticks", 50)
 
     # Build config
     config = {
-        "grid": {"width": 100, "height": 100, "cell_size_meters": 10},
-        "parking": {"num_spots": 200, "num_zones": 8, "price_range": [1, 10]},
+        "grid": {"width": grid_width, "height": grid_height, "cell_size_meters": 10},
+        "parking": {"num_spots": num_spots, "num_zones": num_zones, "price_range": [1, 10]},
         "demand": {
             "arrival_rate_lambda": arrival_rate,
             "parking_duration_mean_ticks": 50,
@@ -895,7 +987,7 @@ def viz_record():
         },
         "simulation": {
             "total_ticks": total_ticks,
-            "warmup_ticks": 50,
+            "warmup_ticks": warmup_ticks,
             "random_seed": 42,
         },
         "strategy": strategy,
@@ -915,10 +1007,11 @@ def viz_record():
     model.recorder = recorder
 
     # Run simulation
-    model.run_simulation()
+    results = model.run_simulation(output_dir=VIZ_FRAMES_DIR)
+    run_id = results.get("frame_run_id")
 
     return jsonify({
         "status": "completed",
         "frames": len(recorder.frames),
-        "run_id": getattr(model, '_frame_run_id', 'unknown'),
+        "run_id": run_id,
     })

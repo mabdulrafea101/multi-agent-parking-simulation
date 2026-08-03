@@ -310,14 +310,15 @@ class ParkingModel(mesa.Model):
             if d.state == "departed" and d.departure_tick == self.steps and d.failed:
                 self.total_failed += 1
     
-    def run_simulation(self):
+    def run_simulation(self, output_dir="output/frames"):
         """Run the full simulation."""
         for _ in range(self.total_ticks):
             self.step()
         # Save recorded frames
         if self.recorder:
             self.recorder.capture_tick()  # Final frame
-            run_id, meta_path, frames_path = self.recorder.save()
+            run_id, meta_path, frames_path = self.recorder.save(output_dir)
+            self._frame_run_id = run_id
             print(f"  Visualization: {self.recorder.frames} frames saved (run_id={run_id})")
         # Close SUMO connection
         if self.sumo:

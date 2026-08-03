@@ -110,23 +110,43 @@ class FrameRecorder:
             meta["city"] = self.city_config
         return meta
 
-    def save(self, output_dir="output/frames"):
+    def save(self, output_dir="output/frames", run_id=None):
         """Save frames and metadata to JSON files."""
         os.makedirs(output_dir, exist_ok=True)
-        run_id = f"run_{int(time.time())}"
+        base_run_id = run_id or f"run_{int(time.time())}"
+        run_id = base_run_id
+        suffix = 2
+        while True:
+            reservation_path = os.path.join(output_dir, f".{run_id}.reserve")
+            try:
+                reservation_fd = os.open(
+                    reservation_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                )
+            except FileExistsError:
+                run_id = f"{base_run_id}_{suffix}"
+                suffix += 1
+                continue
 
-        # Save metadata + spots
-        meta_path = os.path.join(output_dir, f"{run_id}_meta.json")
-        with open(meta_path, "w") as f:
-            json.dump(self.get_metadata(), f)
+            try:
+                meta_path = os.path.join(output_dir, f"{run_id}_meta.json")
+                frames_path = os.path.join(output_dir, f"{run_id}_frames.json")
+                if os.path.exists(meta_path) or os.path.exists(frames_path):
+                    run_id = f"{base_run_id}_{suffix}"
+                    suffix += 1
+                    continue
 
-        # Save frames (compact format)
-        frames_path = os.path.join(output_dir, f"{run_id}_frames.json")
-        with open(frames_path, "w") as f:
-            json.dump(self.frames, f)
+                metadata = self.get_metadata()
+                metadata["visualization_run_id"] = run_id
+                with open(meta_path, "w") as f:
+                    json.dump(metadata, f)
+                with open(frames_path, "w") as f:
+                    json.dump(self.frames, f)
 
-        print(f"  Recorder: Saved {len(self.frames)} frames to {output_dir}/{run_id}_*")
-        return run_id, meta_path, frames_path
+                print(f"  Recorder: Saved {len(self.frames)} frames to {output_dir}/{run_id}_*")
+                return run_id, meta_path, frames_path
+            finally:
+                os.close(reservation_fd)
+                os.unlink(reservation_path)
 
     @staticmethod
     def load(run_id, output_dir="output/frames"):
