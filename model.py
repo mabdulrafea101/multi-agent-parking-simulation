@@ -6,6 +6,7 @@ import mesa
 import random
 import math
 import json
+import os
 import numpy as np
 from recorder import FrameRecorder
 from agents.driver_agent import DriverAgent
@@ -125,9 +126,19 @@ class ParkingModel(mesa.Model):
                 osm = OSMIntegration()
                 graph = osm.download_area(osm_place)
                 if graph:
-                    net_file = self.sumo.setup_network_from_osm(
-                        osm_place, output_dir="output/sumo"
+                    os.makedirs("output/sumo", exist_ok=True)
+                    osm_file = osm.export_to_sumo(
+                        output_path=os.path.join(
+                            "output", "sumo", f"{osm_place}.osm.xml"
+                        )
                     )
+                    if not osm_file:
+                        print("  SUMO: OSM export failed, using synthetic network")
+                        net_file = None
+                    else:
+                        net_file = self.sumo.setup_network_from_osm(
+                            osm_file, output_dir="output/sumo"
+                        )
                     if net_file:
                         self._sumo_net_file = net_file
                         print(f"  SUMO: OSM network created at {net_file}")
