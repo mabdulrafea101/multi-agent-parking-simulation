@@ -25,7 +25,20 @@ def _sumo_bin(name):
     # Make sure subprocesses can find SUMO tools
     os.environ["SUMO_HOME"] = sumo_home
     os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+    _ensure_proj_lib()
     return os.path.join(bin_dir, name)
+
+
+def _ensure_proj_lib():
+    """Set PROJ_LIB so SUMO netconvert can find proj.db."""
+    if "PROJ_LIB" in os.environ:
+        return
+    try:
+        import pyproj
+        proj_dir = os.path.dirname(pyproj.datadir.get_data_dir())
+        os.environ["PROJ_LIB"] = proj_dir
+    except Exception:
+        pass
 
 
 class SUMOIntegration:
