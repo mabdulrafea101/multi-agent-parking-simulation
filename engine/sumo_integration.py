@@ -30,13 +30,14 @@ def _sumo_bin(name):
 
 
 def _ensure_proj_lib():
-    """Set PROJ_LIB so SUMO netconvert can find proj.db."""
-    if "PROJ_LIB" in os.environ:
+    """Set PROJ_DATA and PROJ_LIB so SUMO can find proj.db on any platform."""
+    if "PROJ_LIB" in os.environ or "PROJ_DATA" in os.environ:
         return
     try:
         import pyproj
-        proj_dir = os.path.dirname(pyproj.datadir.get_data_dir())
-        os.environ["PROJ_LIB"] = proj_dir
+        data_dir = pyproj.datadir.get_data_dir()
+        os.environ["PROJ_DATA"] = data_dir
+        os.environ["PROJ_LIB"] = os.path.dirname(data_dir)
     except Exception:
         pass
 
