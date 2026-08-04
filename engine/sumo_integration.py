@@ -381,7 +381,8 @@ class OSMIntegration:
     def download_area(self, place_name, network_type="drive"):
         try:
             import osmnx as ox
-            self.graph = ox.graph_from_place(place_name, network_type=network_type)
+            ox.settings.all_oneway = True
+            self.graph = ox.graph_from_place(place_name, network_type=network_type, simplify=False)
             return self.graph
         except Exception as e:
             print(f"  OSM download failed: {e}")

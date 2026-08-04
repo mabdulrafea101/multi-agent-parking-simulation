@@ -184,3 +184,26 @@ def test_city_initialization_uses_synthetic_network_when_osm_export_fails(
 
     assert model._sumo_net_file == synthetic_file
     assert "OSM export failed" in capsys.readouterr().out
+
+
+def test_osm_download_uses_simplify_false(monkeypatch):
+    class FakeGraph:
+        def nodes(self, data=True):
+            return []
+
+    called_with = {}
+
+    def fake_graph_from_place(place_name, network_type="drive", **kwargs):
+        called_with["place_name"] = place_name
+        called_with["network_type"] = network_type
+        called_with["kwargs"] = kwargs
+        return FakeGraph()
+
+    monkeypatch.setattr("osmnx.graph_from_place", fake_graph_from_place)
+
+    from engine.sumo_integration import OSMIntegration
+    osm = OSMIntegration()
+    osm.download_area("test_place")
+
+    assert called_with["place_name"] == "test_place"
+    assert called_with["kwargs"].get("simplify") is False
