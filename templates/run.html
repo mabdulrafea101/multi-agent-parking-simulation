@@ -45,20 +45,48 @@
     }
 </style>
 
-{% if state.status == 'running' %}
+{% if state.status != 'idle' %}
 <div class="card">
-    <h2>Experiment in Progress</h2>
-    <p>
-        <span class="status-badge status-running">RUNNING</span>
+    <h2 id="run-summary">
+        {% if state.status == 'running' %}
+        Experiment in Progress
+        {% elif state.status == 'completed' %}
+        Previous Results Available
+        {% elif state.status == 'error' %}
+        Last Experiment Failed
+        {% else %}
+        Experiment Stopped
+        {% endif %}
+    </h2>
+    <p id="run-details">
+        <span id="status-badge" class="status-badge status-{{ state.status }}">{{ state.status|upper }}</span>
         Scenario: <strong>{{ state.scenario|default('All') }}</strong> &middot;
         Strategy: <strong>{{ state.strategy|default('All') }}</strong> &middot;
         Replications: <strong>{{ state.replications }}</strong>
     </p>
 
     <div class="progress-bar">
-        <div class="fill" id="progress-fill" style="width: 0%"></div>
+        <div class="fill" id="progress-fill" style="width: {% if state.status == 'completed' %}100{% elif state.total_runs %}{{ ((state.completed_runs / state.total_runs) * 100)|round(0)|int }}{% else %}0{% endif %}%"></div>
     </div>
-    <p id="progress-text" style="font-size: 0.85rem; color: #64748b;">Starting experiment...</p>
+    <p id="progress-text" style="font-size: 0.85rem; color: #64748b;">
+        {% if state.status == 'running' %}
+        Starting experiment...
+        {% elif state.status == 'completed' %}
+        Experiment completed successfully!
+        {% elif state.status == 'error' %}
+        Error: {{ state.error_message|default('Unknown error') }}
+        {% else %}
+        Experiment stopped before completion.
+        {% endif %}
+    </p>
+
+    {% if state.status == 'completed' %}
+    <p id="results-link"><a href="{{ url_for('dashboard.results') }}">View results &rarr;</a></p>
+    {% elif state.status == 'error' %}
+    <p id="terminal-message">{{ state.error_message|default('Unknown error') }}</p>
+    {% elif state.status == 'stopped' %}
+    <p id="terminal-message">The experiment was stopped before completion.</p>
+    {% endif %}
 
     <div class="log" id="progress-log">
         {% for line in state.progress_log %}
@@ -67,7 +95,53 @@
     </div>
 </div>
 
+{% if state.status == 'running' %}
 <script>
+const POLL_INTERVAL = 1500;
+
+function updateProgressLog(log, entries) {
+    log.innerHTML = '';
+    (entries || []).forEach(function(line) {
+        const d = document.createElement('div');
+        d.textContent = line;
+        log.appendChild(d);
+    });
+    log.scrollTop = log.scrollHeight;
+}
+
+function terminalProgressPercent(state) {
+    if (state.status === 'completed') {
+        return 100;
+    }
+    return state.total_runs > 0
+        ? Math.round((state.completed_runs / state.total_runs) * 100)
+        : 0;
+}
+
+function updateTerminalState(state, fill, text, log, badge, summary) {
+    updateProgressLog(log, state.progress_log);
+    badge.textContent = state.status.toUpperCase();
+    badge.className = 'status-badge status-' + state.status;
+    fill.style.width = terminalProgressPercent(state) + '%';
+
+    if (state.status === 'completed') {
+        text.textContent = 'Experiment completed successfully!';
+        summary.textContent = 'Experiment Complete';
+        if (!document.getElementById('results-link')) {
+            const link = document.createElement('p');
+            link.id = 'results-link';
+            link.innerHTML = '<a href="{{ url_for('dashboard.results') }}">View results &rarr;</a>';
+            text.parentNode.insertBefore(link, log);
+        }
+    } else if (state.status === 'error') {
+        text.textContent = 'Error: ' + (state.error_message || 'Unknown error');
+        summary.textContent = 'Experiment Failed';
+    } else if (state.status === 'stopped') {
+        text.textContent = 'Experiment stopped before completion.';
+        summary.textContent = 'Experiment Stopped';
+    }
+}
+
 function pollProgress() {
     fetch('/progress.json')
         .then(r => r.json())
@@ -75,15 +149,11 @@ function pollProgress() {
             const fill = document.getElementById('progress-fill');
             const text = document.getElementById('progress-text');
             const log = document.getElementById('progress-log');
+            const badge = document.getElementById('status-badge');
+            const summary = document.getElementById('run-summary');
 
-            if (state.status === 'completed') {
-                fill.style.width = '100%';
-                text.textContent = 'Experiment completed successfully!';
-                setTimeout(() => window.location.href = '/results', 1500);
-                return;
-            }
-            if (state.status === 'error') {
-                text.textContent = 'Error: ' + (state.error_message || 'Unknown error');
+            if (state.status === 'completed' || state.status === 'error' || state.status === 'stopped') {
+                updateTerminalState(state, fill, text, log, badge, summary);
                 return;
             }
 
@@ -93,23 +163,18 @@ function pollProgress() {
             fill.style.width = pct + '%';
             text.textContent = 'Run ' + state.completed_runs + ' of ' + state.total_runs
                 + ' (' + pct + '%)';
-
-            log.innerHTML = '';
-            (state.progress_log || []).forEach(function(line) {
-                const d = document.createElement('div');
-                d.textContent = line;
-                log.appendChild(d);
-            });
-            log.scrollTop = log.scrollHeight;
-
-            setTimeout(pollProgress, 1500);
+            updateProgressLog(log, state.progress_log);
+            setTimeout(pollProgress, POLL_INTERVAL);
         })
-        .catch(() => setTimeout(pollProgress, 3000));
+        .catch(() => setTimeout(pollProgress, POLL_INTERVAL));
 }
 pollProgress();
 </script>
+{% endif %}
 
-{% else %}
+{% endif %}
+
+{% if state.status != 'running' %}
 <div class="card">
     <h2>Configure Experiment</h2>
     <p>Configure and launch a new simulation experiment. The experiment runs in the background.</p>
@@ -221,17 +286,5 @@ document.getElementById('simulation_type').addEventListener('change', toggleCity
 toggleCitySelector();
 recalcTotal();
 </script>
-
-{% if state.status == 'completed' %}
-<div class="card">
-    <h2>Previous Results Available</h2>
-    <p>The last experiment completed successfully. <a href="{{ url_for('dashboard.results') }}">View results &rarr;</a></p>
-</div>
-{% elif state.status == 'error' %}
-<div class="card" style="border-color: #dc2626;">
-    <h2 style="color: #fca5a5;">Last Experiment Failed</h2>
-    <p>{{ state.error_message }}</p>
-</div>
-{% endif %}
 {% endif %}
 {% endblock %}

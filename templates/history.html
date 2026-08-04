@@ -54,6 +54,9 @@
                     </td>
                 <td>
                     <a href="{{ url_for('dashboard.history_run', run_id=run.id) }}" class="btn btn-primary">View Results</a>
+                    <form method="POST" action="{{ url_for('dashboard.history_delete', run_id=run.id) }}" style="display: inline;" onsubmit="return confirm('Delete this experiment run?');">
+                        <button type="submit" class="btn btn-secondary">Delete</button>
+                    </form>
                 </td>
             </tr>
             {% else %}

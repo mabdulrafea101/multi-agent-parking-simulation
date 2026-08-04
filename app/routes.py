@@ -3,6 +3,7 @@ import csv
 import copy
 import json
 import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -112,7 +113,7 @@ def _additional_figures(figures, primary_figures):
     return [figure for figure in figures if os.path.basename(figure) not in primary_names]
 
 experiment_state = {
-    "status": "idle",  # idle | running | completed | error
+    "status": "idle",  # idle | running | completed | error | stopped
     "scenario": None,
     "strategy": None,
     "replications": None,
@@ -134,6 +135,27 @@ bp = Blueprint("dashboard", __name__)
 
 SIMULATION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(SIMULATION_DIR, "output", "experiments.sqlite")
+
+
+def _recover_stale_experiments():
+    """Mark runs left active by an interrupted application as stopped."""
+    conn = _get_db()
+    conn.execute(
+        """
+        UPDATE experiments
+        SET status='stopped', error=?
+        WHERE status='running'
+        """,
+        ("Experiment was interrupted when the application stopped.",),
+    )
+    conn.commit()
+    conn.close()
+
+
+@bp.record_once
+def _initialize_database(state):
+    """Initialize the schema and recover runs during app creation."""
+    _recover_stale_experiments()
 
 
 def _get_db():
@@ -548,12 +570,35 @@ def run_experiment():
             if experiment_state["status"] == "running":
                 return redirect(url_for("dashboard.run_experiment"))
 
-        thread = threading.Thread(
-            target=_run_experiment_async,
-            args=(scenario, strategy, replications, simulation_type, city),
-            daemon=True,
-        )
-        experiment_thread = thread
+            # Reserve the launch before releasing the lock so a second POST
+            # cannot pass the status check while the worker is starting.
+            experiment_state.update(
+                {
+                    "status": "running",
+                    "started_at": time.time(),
+                    "scenario": scenario,
+                    "strategy": strategy,
+                    "replications": replications,
+                    "simulation_type": simulation_type,
+                    "city": city,
+                    "total_runs": (len([scenario]) if scenario else 4)
+                    * (len([strategy]) if strategy else 4)
+                    * replications,
+                    "completed_runs": 0,
+                    "progress_log": ["Experiment queued."],
+                    "error_message": None,
+                    "run_rows": [],
+                    "returncode": None,
+                    "run_id": None,
+                    "visualization_run_id": None,
+                }
+            )
+            thread = threading.Thread(
+                target=_run_experiment_async,
+                args=(scenario, strategy, replications, simulation_type, city),
+                daemon=True,
+            )
+            experiment_thread = thread
         thread.start()
         return redirect(url_for("dashboard.run_experiment"))
 
@@ -572,7 +617,7 @@ def progress():
                 state = dict(experiment_state)
             data = json.dumps(state)
             yield f"data: {data}\n\n"
-            if state["status"] in ("completed", "error"):
+            if state["status"] in ("completed", "error", "stopped"):
                 break
             time.sleep(1)
 
@@ -716,6 +761,58 @@ def history_run(run_id):
         history_run_id=run_id,
         run_at=row["run_at"],
     )
+
+
+@bp.route("/history/run/<int:run_id>/delete", methods=["POST"])
+def history_delete(run_id):
+    """Delete one historical run and its run-local artifacts."""
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT results_path FROM experiments WHERE id=?", (run_id,)
+    ).fetchone()
+    if not row or not row["results_path"]:
+        conn.close()
+        return "Not found", 404
+
+    output_path = os.path.join(SIMULATION_DIR, "output")
+    literal_run_dir = os.path.join(output_path, f"run_{run_id}")
+    if not os.path.isdir(literal_run_dir) or os.path.islink(literal_run_dir):
+        conn.close()
+        return "Not found", 404
+
+    output_dir = os.path.realpath(output_path)
+    expected_run_dir = os.path.realpath(os.path.join(output_dir, f"run_{run_id}"))
+    results_path = os.path.realpath(row["results_path"])
+    run_dir = os.path.realpath(os.path.dirname(row["results_path"]))
+    try:
+        safe_results_path = (
+            run_dir == expected_run_dir
+            and results_path != expected_run_dir
+            and os.path.commonpath([expected_run_dir, results_path]) == expected_run_dir
+        )
+    except ValueError:
+        safe_results_path = False
+    if not safe_results_path:
+        conn.close()
+        return "Not found", 404
+
+    figure_dir = os.path.realpath(os.path.join(output_dir, "figures", f"run_{run_id}"))
+    try:
+        inside_output = os.path.commonpath([output_dir, figure_dir]) == output_dir
+    except ValueError:
+        inside_output = False
+    if not inside_output:
+        conn.close()
+        return "Not found", 404
+
+    if os.path.isdir(run_dir):
+        shutil.rmtree(run_dir)
+    if os.path.isdir(figure_dir):
+        shutil.rmtree(figure_dir)
+    conn.execute("DELETE FROM experiments WHERE id=?", (run_id,))
+    conn.commit()
+    conn.close()
+    return redirect(url_for("dashboard.history"))
 
 
 @bp.route("/history.json")

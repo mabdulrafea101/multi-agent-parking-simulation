@@ -277,7 +277,7 @@ def test_history_renders_stored_status_and_error(tmp_path, monkeypatch):
 
     client = create_app().test_client()
     body = client.get("/history").get_data(as_text=True)
-    assert "Running" in body
+    assert "Stopped" in body
     assert "Completed" not in body
     assert "Error" in body
 
@@ -875,9 +875,320 @@ def test_async_success_persists_visualization_run_and_route_discovery(tmp_path, 
     monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(tmp_path / "output" / "frames"))
     routes._run_experiment_async("low_demand", "auction", 1)
 
-    stored = routes._get_db().execute("SELECT progress_json FROM experiments WHERE id=1").fetchone()
+    conn = routes._get_db()
+    stored = conn.execute("SELECT progress_json FROM experiments WHERE id=1").fetchone()
+    conn.close()
     progress = json.loads(stored["progress_json"])
     visualization_run_id = progress["visualization_run_id"]
     assert visualization_run_id
     assert routes.experiment_state["visualization_run_id"] == visualization_run_id
     assert create_app().test_client().get("/api/viz/runs").get_json()[0]["run_id"] == visualization_run_id
+
+
+def test_app_startup_recovers_persisted_running_runs_as_stopped(tmp_path, monkeypatch):
+    db_path = tmp_path / "experiments.sqlite"
+    monkeypatch.setattr(routes, "DB_PATH", str(db_path))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, scenario, strategy, status) VALUES (?, ?, ?, ?, ?)",
+        (41, "2026-08-04T08:00:00", "high_demand", "auction", "running"),
+    )
+    conn.commit()
+    conn.close()
+
+    create_app()
+
+    conn = routes._get_db()
+    stored = conn.execute("SELECT status, error FROM experiments WHERE id=41").fetchone()
+    conn.close()
+    assert stored["status"] == "stopped"
+    assert stored["error"]
+    recovery_message = stored["error"].lower()
+    assert "stopped" in recovery_message or "interrupted" in recovery_message
+
+
+def test_history_delete_removes_only_run_local_artifacts_and_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    output_dir = tmp_path / "output"
+    run_dir = output_dir / "run_7"
+    figure_dir = output_dir / "figures" / "run_7"
+    unrelated_dir = output_dir / "run_8"
+    run_dir.mkdir(parents=True)
+    figure_dir.mkdir(parents=True)
+    unrelated_dir.mkdir(parents=True)
+    (run_dir / "experiment_results.csv").write_text("scenario\nrun-7\n")
+    (figure_dir / "pst_comparison.png").write_bytes(b"run-7")
+    (unrelated_dir / "experiment_results.csv").write_text("scenario\nrun-8\n")
+
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, results_path, figures_json, status) VALUES (?, ?, ?, ?, ?)",
+        (7, "2026-08-04T08:00:00", str(run_dir / "experiment_results.csv"), json.dumps(["run_7/pst_comparison.png"]), "completed"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = create_app().test_client().post("/history/run/7/delete")
+
+    assert response.status_code == 302
+    assert not run_dir.exists()
+    assert not figure_dir.exists()
+    assert unrelated_dir.exists()
+    conn = routes._get_db()
+    assert not conn.execute("SELECT 1 FROM experiments WHERE id=7").fetchone()
+    conn.close()
+
+
+def test_history_delete_rejects_outside_results_path_without_deleting_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_file = outside_dir / "experiment_results.csv"
+    outside_file.write_text("scenario\noutside\n")
+
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, results_path, status) VALUES (?, ?, ?, ?)",
+        (8, "2026-08-04T08:00:00", str(outside_file), "completed"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = create_app().test_client().post("/history/run/8/delete")
+
+    assert response.status_code == 404
+    assert outside_file.read_text() == "scenario\noutside\n"
+    conn = routes._get_db()
+    assert conn.execute("SELECT 1 FROM experiments WHERE id=8").fetchone()
+    conn.close()
+
+
+@pytest.mark.parametrize("unsafe_path", [
+    "output/csv/experiment_results.csv",
+    "output/figures/run_9/pst_comparison.png",
+    "output/run_8/experiment_results.csv",
+])
+def test_history_delete_rejects_noncanonical_run_directory(tmp_path, monkeypatch, unsafe_path):
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    unsafe_file = tmp_path / unsafe_path
+    unsafe_file.parent.mkdir(parents=True)
+    unsafe_file.write_text("must remain\n")
+
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, results_path, status) VALUES (?, ?, ?, ?)",
+        (9, "2026-08-04T08:00:00", str(unsafe_file), "completed"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = create_app().test_client().post("/history/run/9/delete")
+
+    assert response.status_code == 404
+    assert unsafe_file.read_text() == "must remain\n"
+    conn = routes._get_db()
+    assert conn.execute("SELECT 1 FROM experiments WHERE id=9").fetchone()
+    conn.close()
+
+
+def test_history_delete_rejects_symlinked_run_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    output_dir = tmp_path / "output"
+    target_dir = output_dir / "real_run_12"
+    run_path = output_dir / "run_12"
+    target_dir.mkdir(parents=True)
+    (target_dir / "experiment_results.csv").write_text("scenario\ntarget\n")
+    run_path.symlink_to(target_dir, target_is_directory=True)
+
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, results_path, status) VALUES (?, ?, ?, ?)",
+        (12, "2026-08-04T08:00:00", str(run_path / "experiment_results.csv"), "completed"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = create_app().test_client().post("/history/run/12/delete")
+
+    assert response.status_code == 404
+    assert run_path.is_symlink()
+    assert (target_dir / "experiment_results.csv").read_text() == "scenario\ntarget\n"
+    conn = routes._get_db()
+    assert conn.execute("SELECT 1 FROM experiments WHERE id=12").fetchone()
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "running",
+        "completed",
+        "error",
+        "stopped",
+    ],
+)
+def test_run_renders_state_specific_content(tmp_path, monkeypatch, status):
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        routes,
+        "_load_run_config",
+        lambda: {"simulation_types": {}, "osm_cities": {}},
+    )
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {
+            "status": status,
+            "scenario": "high_demand",
+            "strategy": "auction",
+            "replications": 1,
+            "total_runs": 4,
+            "completed_runs": 2,
+            "progress_log": ["replication complete"],
+            "error_message": "simulation failed" if status == "error" else None,
+        },
+    )
+
+    response = create_app().test_client().get("/run")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    if status == "running":
+        assert "RUNNING" in body
+        assert "replication complete" in body
+        assert 'name="scenario"' not in body
+    elif status == "error":
+        assert "simulation failed" in body
+        assert 'name="scenario"' in body
+        assert 'class="btn btn-primary">Launch Experiment</button>' in body
+    elif status == "completed":
+        assert "Previous Results Available" in body
+        assert 'href="/results"' in body
+        assert 'name="scenario"' in body
+        assert 'class="btn btn-primary">Launch Experiment</button>' in body
+    else:
+        assert "STOPPED" in body
+        assert 'name="scenario"' in body
+        assert 'class="btn btn-primary">Launch Experiment</button>' in body
+
+    assert 'id="progress-fill" style="width: 100%"' in body if status == "completed" else 'id="progress-fill" style="width: 50%"' in body
+    assert 'id="run-summary"' in body
+    assert 'id="status-badge"' in body
+    if status != "running":
+        assert "setTimeout(pollProgress" not in body
+
+
+@pytest.mark.parametrize("status", ["completed", "error", "stopped"])
+def test_progress_sse_terminates_after_terminal_status(monkeypatch, status):
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {"status": status, "completed_runs": 2, "total_runs": 4, "progress_log": []},
+    )
+
+    stream = create_app().test_client().get("/progress").response
+
+    assert next(stream).startswith(b"data: ")
+    with pytest.raises(StopIteration):
+        next(stream)
+
+
+def test_run_progress_panel_has_stable_ids_and_state_aware_polling(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        routes,
+        "_load_run_config",
+        lambda: {"simulation_types": {}, "osm_cities": {}},
+    )
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {
+            "status": "running",
+            "scenario": "high_demand",
+            "strategy": "auction",
+            "replications": 1,
+            "total_runs": 4,
+            "completed_runs": 2,
+            "progress_log": ["replication complete"],
+            "error_message": None,
+        },
+    )
+
+    body = create_app().test_client().get("/run").get_data(as_text=True)
+
+    for element_id in ("status-badge", "run-summary", "progress-fill", "progress-text", "progress-log"):
+        assert f'id="{element_id}"' in body
+    assert "fetch('/progress.json')" in body
+    assert "state.status === 'completed'" in body
+    assert "state.status === 'error'" in body
+    assert "state.status === 'stopped'" in body
+    assert "window.location.href = '/results'" not in body
+
+
+def test_near_sequential_launch_posts_create_only_one_worker(monkeypatch):
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            started.append(self)
+
+    monkeypatch.setattr(routes.threading, "Thread", FakeThread)
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {"status": "idle", "run_rows": [], "progress_log": []},
+    )
+    client = create_app().test_client()
+
+    first = client.post("/run", data={"replications": "1"})
+    second = client.post("/run", data={"replications": "1"})
+
+    assert first.status_code == 302
+    assert second.status_code == 302
+    assert len(started) == 1
+    assert routes.experiment_state["status"] == "running"
+
+
+@pytest.mark.parametrize("status", ["completed", "error", "stopped"])
+def test_terminal_run_progress_uses_completed_runs_ratio(tmp_path, monkeypatch, status):
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        routes,
+        "_load_run_config",
+        lambda: {"simulation_types": {}, "osm_cities": {}},
+    )
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {
+            "status": status,
+            "scenario": "high_demand",
+            "strategy": "auction",
+            "replications": 1,
+            "total_runs": 4,
+            "completed_runs": 1,
+            "progress_log": [],
+            "error_message": "simulation failed" if status == "error" else None,
+        },
+    )
+
+    body = create_app().test_client().get("/run").get_data(as_text=True)
+
+    expected_width = 100 if status == "completed" else 25
+    assert f'id="progress-fill" style="width: {expected_width}%"' in body
+
+    routes.experiment_state["status"] = "running"
+    body = create_app().test_client().get("/run").get_data(as_text=True)
+    assert "fill.style.width = terminalProgressPercent(state) + '%';" in body
