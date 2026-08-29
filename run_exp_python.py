@@ -43,6 +43,12 @@ python = sys.executable
 output_dir = os.path.join(SIM_DIR, "output")
 
 cmd = [python, experiments_script] + sys.argv[1:]
+# Auto-pick SUMO backend when SUMO_HOME is set or auto-detected and the user
+# didn't pass --simulation-type themselves.
+if "--simulation-type" not in sys.argv and "-t" not in sys.argv:
+    from engine.sumo_integration import _sumo_bin
+    if _sumo_bin("sumo") and os.path.isfile(_sumo_bin("netgenerate")):
+        cmd += ["--simulation-type", "sumo"]
 cmd += ["--output-dir", output_dir]
 
 log_path = os.path.join(output_dir, "experiment_run.log")

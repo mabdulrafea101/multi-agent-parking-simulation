@@ -4,6 +4,7 @@ Uses TraCI (Traffic Control Interface) to connect Mesa agents with SUMO traffic 
 """
 import os
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
 try:
@@ -27,6 +28,20 @@ SUMO_HOME_CANDIDATES = [
 
 
 def _default_sumo_home():
+    # First, check the venv-relative pip install location (eclipse-sumo wheel).
+    # The wheel puts binaries in .../venv/Lib/site-packages/sumo/bin and
+    # data in .../venv/Lib/site-packages/sumo_data; SUMO_HOME should point
+    # to the directory containing bin/ (i.e. .../site-packages/sumo).
+    is_windows = sys.platform.startswith("win")
+    exe_suffix = ".exe" if is_windows else ""
+    try:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        venv_lib = os.path.join(project_root, "venv", "Lib", "site-packages")
+        wheel = os.path.join(venv_lib, "sumo", "bin", f"sumo{exe_suffix}")
+        if os.path.isfile(wheel):
+            return os.path.dirname(os.path.dirname(wheel))  # .../site-packages/sumo
+    except Exception:
+        pass
     for p in SUMO_HOME_CANDIDATES:
         if os.path.isdir(p):
             return p
@@ -87,7 +102,14 @@ def _sumo_bin(name):
     os.environ["SUMO_HOME"] = sumo_home
     os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
     _ensure_proj_lib()
-    return os.path.join(bin_dir, name)
+    # On Windows the binaries end in .exe. If caller asked for "sumo" and
+    # the unprefixed file is missing, fall back to the .exe variant.
+    candidate = os.path.join(bin_dir, name)
+    if not os.path.isfile(candidate) and sys.platform.startswith("win"):
+        exe_candidate = candidate + ".exe"
+        if os.path.isfile(exe_candidate):
+            return exe_candidate
+    return candidate
 
 
 def _ensure_proj_lib():

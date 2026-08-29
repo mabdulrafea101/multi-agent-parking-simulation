@@ -1,7 +1,10 @@
 # run_experiments.ps1 — Run the full 480-experiment suite with proper env setup
 [CmdletBinding()]
 param(
-    [int]$Replications = 30
+    [int]$Replications = 30,
+    [ValidateSet("mesa", "sumo", "osm_city")]
+    [string]$SimulationType = "auto",
+    [string]$City
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +34,7 @@ Write-Host "============================================"
 Write-Host "  Running 480-Experiment Suite"
 Write-Host "  SUMO_HOME: $($env:SUMO_HOME)"
 Write-Host "  Replications: $Replications"
+Write-Host "  SimulationType: $SimulationType (auto = SUMO if available, else mesa)"
 Write-Host "  Start: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "============================================"
 
@@ -57,7 +61,23 @@ foreach ($proc in @("sumo", "sumo-gui")) {
 Start-Sleep -Seconds 2
 
 # --- Run experiments ---
-& .\venv\Scripts\python.exe experiments.py --all-scenarios --replications $Replications 2>&1 | Tee-Object -FilePath "output\experiment_run.log"
+$expArgs = @("--all-scenarios", "--replications", $Replications)
+if ($SimulationType -ne "auto") {
+    $expArgs += @("--simulation-type", $SimulationType)
+    if ($SimulationType -eq "osm_city" -and $City) {
+        $expArgs += @("--city", $City)
+    }
+} else {
+    # Auto-pick SUMO when installed (eclipse-sumo pip wheel or system install).
+    $sumoProbe = & .\venv\Scripts\python.exe -c "from engine.sumo_integration import _sumo_bin; import os; print('OK' if os.path.isfile(_sumo_bin('sumo')) and os.path.isfile(_sumo_bin('netgenerate')) else 'NO')" 2>$null
+    if ($sumoProbe -eq "OK") {
+        $expArgs += @("--simulation-type", "sumo")
+        Write-Host "[run_experiments] Auto-selected simulation-type: sumo (SUMO detected)"
+    } else {
+        Write-Host "[run_experiments] SUMO not detected - running Mesa-only"
+    }
+}
+& .\venv\Scripts\python.exe experiments.py @expArgs 2>&1 | Tee-Object -FilePath "output\experiment_run.log"
 $exitCode = $LASTEXITCODE
 
 Write-Host ""

@@ -45,8 +45,18 @@ taskkill /F /IM sumo.exe 2>nul
 taskkill /F /IM sumo-gui.exe 2>nul
 ping -n 3 127.0.0.1 >nul
 
+REM --- Auto-pick SUMO if available ---
+set "SIM_TYPE="
+venv\Scripts\python.exe -c "from engine.sumo_integration import _sumo_bin; import os, sys; sys.exit(0 if os.path.isfile(_sumo_bin('sumo')) and os.path.isfile(_sumo_bin('netgenerate')) else 1)" 1>nul 2>nul
+if not errorlevel 1 (
+    set "SIM_TYPE=--simulation-type sumo"
+    echo [run_experiments] Auto-selected simulation-type: sumo (SUMO detected^)
+) else (
+    echo [run_experiments] SUMO not detected - running Mesa-only
+)
+
 REM --- Run experiments and tee to log ---
-venv\Scripts\python.exe experiments.py --all-scenarios --replications %REPS% > output\experiment_run.log 2>&1
+venv\Scripts\python.exe experiments.py --all-scenarios --replications %REPS% %SIM_TYPE% > output\experiment_run.log 2>&1
 set "EXITCODE=%ERRORLEVEL%"
 
 echo.

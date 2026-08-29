@@ -345,6 +345,14 @@ def parse_args():
     parser.add_argument("--replications", type=int, default=30, help="Number of replications per cell")
     parser.add_argument("--base-seed", type=int, default=None, help="Base random seed")
     parser.add_argument("--output-dir", default="output", help="Output directory")
+    parser.add_argument(
+        "--simulation-type",
+        choices=["mesa", "sumo", "osm_city"],
+        default="mesa",
+        help="Backend: 'mesa' (Mesa-only), 'sumo' (Mesa + SUMO synthetic net), "
+             "'osm_city' (Mesa + SUMO + OSM real network). Default: mesa.",
+    )
+    parser.add_argument("--city", default=None, help="City key (e.g. kuala_lumpur) when --simulation-type=osm_city")
     return parser.parse_args()
 
 
@@ -357,6 +365,8 @@ def main():
         scenarios=selected_scenarios,
         strategies=selected_strategies,
         replication_end=args.replications,
+        simulation_type=args.simulation_type,
+        city=args.city,
     )
 
 

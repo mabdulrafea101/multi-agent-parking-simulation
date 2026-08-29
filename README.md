@@ -119,6 +119,21 @@ python --version
 
 ### 2. Install SUMO (optional but recommended)
 
+You have two options on Windows:
+
+**Option A — pip wheel (recommended, no admin, no MSI)**:
+
+```powershell
+venv\Scripts\python.exe -m pip install eclipse-sumo traci sumolib
+```
+
+This installs the full SUMO toolchain (binaries, libs, data files) inside
+your venv at `venv\Lib\site-packages\sumo\bin\` and the Python `traci` /
+`sumolib` modules. No `SUMO_HOME` env var needed — the project
+auto-detects the venv location.
+
+**Option B — official MSI installer**:
+
 Download the 64-bit Windows installer from
 https://sumo.dlr.de/docs/Downloads.php and install to one of:
 
@@ -129,6 +144,12 @@ https://sumo.dlr.de/docs/Downloads.php and install to one of:
 If you install elsewhere, set the `SUMO_HOME` env var to the `share/sumo`
 subdirectory inside the install (e.g. `C:\SUMO\share\sumo`). The launchers
 auto-detect the three paths above, so a default install needs no env var.
+
+After either option, also install the Python `traci` / `sumolib` modules
+from PyPI (the MSI install does not include them):
+```powershell
+venv\Scripts\python.exe -m pip install traci sumolib
+```
 
 ### 3. Clone and create the venv
 
@@ -172,6 +193,20 @@ Or download from https://www.python.org/downloads/macos/.
 
 ### 2. Install SUMO (optional but recommended)
 
+You have two options on macOS:
+
+**Option A — pip wheel (recommended, no Homebrew, no GUI package)**:
+
+```bash
+./venv/bin/pip install eclipse-sumo traci sumolib
+```
+
+This installs the full SUMO toolchain (binaries, libs, data files) inside
+your venv. No `SUMO_HOME` env var needed — the project auto-detects the
+venv location.
+
+**Option B — Homebrew**:
+
 ```bash
 brew install sumo
 ```
@@ -181,6 +216,12 @@ or `/usr/local/opt/sumo/share/sumo` (Intel). Both paths are auto-detected by
 the launchers. To use a manual install, set:
 ```bash
 export SUMO_HOME="/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo"
+```
+
+After Option B, also install the Python `traci` / `sumolib` modules from
+PyPI (Homebrew does not include them):
+```bash
+./venv/bin/pip install traci sumolib
 ```
 
 ### 3. Clone and create the venv
@@ -252,12 +293,32 @@ python main.py --osm "Kuala Lumpur, Malaysia" --strategy auction
 python main.py --strategy auction --gui
 ```
 
+For the batch experiment runner, choose a simulation backend with
+`--simulation-type`. When you run via `run_experiments.*` or
+`run_exp_python.py`, the launcher auto-detects SUMO and uses it; otherwise
+Mesa-only is the default.
+
+```bash
+# Mesa-only (default, fastest, no SUMO required)
+python experiments.py --all-scenarios --replications 30
+
+# Mesa + SUMO synthetic grid (auto-selected when SUMO is installed)
+python experiments.py --all-scenarios --replications 30 --simulation-type sumo
+
+# Mesa + SUMO + real OpenStreetMap city (requires SUMO + osmnx + SUMO_HOME)
+python experiments.py --all-scenarios --replications 30 \
+    --simulation-type osm_city --city kuala_lumpur
+```
+
 On Windows, use the venv Python directly:
 ```powershell
 venv\Scripts\python.exe main.py --strategy auction --replications 1
+venv\Scripts\python.exe experiments.py --all-scenarios --replications 30 --simulation-type sumo
 ```
 
 Results land under `output/csv/`, `output/figures/`, and `output/tables/`.
+The `sumo_connected` column in `output/csv/experiment_results.csv` reports
+whether SUMO was active for each run (`True` = Mesa+SUMO, `False` = Mesa-only).
 
 ---
 
