@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Agent / IDE local state
+.commandcode/
+
 # Virtual environments
 .venv/
 venv/

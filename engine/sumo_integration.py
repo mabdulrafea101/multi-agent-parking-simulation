@@ -15,12 +15,73 @@ except ImportError:
 
 from engine.cities import get_city_config
 
-SUMO_HOME_DEFAULT = "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo"
+SUMO_HOME_CANDIDATES = [
+    "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo",  # macOS
+    "/usr/share/sumo",          # Linux apt
+    "/usr/local/share/sumo",    # Linux brew
+    "/opt/homebrew/share/sumo", # macOS brew
+    "C:/Program Files (x86)/Eclipse SUMO",  # Windows default installer
+    "C:/Program Files/Eclipse SUMO",
+    "C:/SUMO",
+]
+
+
+def _default_sumo_home():
+    for p in SUMO_HOME_CANDIDATES:
+        if os.path.isdir(p):
+            return p
+    return ""
+
+
+def _kill_stale_sumo(port):
+    """Best-effort cleanup of stale SUMO processes holding the TraCI port.
+
+    Cross-platform: uses taskkill on Windows, pgrep/lsof on macOS/Linux.
+    All failures are swallowed; this is purely a best-effort cleanup.
+    """
+    import sys
+    import subprocess
+    is_windows = sys.platform.startswith("win")
+    try:
+        if is_windows:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "sumo.exe"],
+                capture_output=True, timeout=5,
+            )
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "sumo-gui.exe"],
+                capture_output=True, timeout=5,
+            )
+        else:
+            import signal
+            for pattern in (f"sumo.*-c.*traci_config",):
+                result = subprocess.run(
+                    ["pgrep", "-f", pattern],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for pid_str in result.stdout.strip().splitlines():
+                    if pid_str.strip():
+                        try:
+                            os.kill(int(pid_str), signal.SIGTERM)
+                        except (ProcessLookupError, ValueError, PermissionError):
+                            pass
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for pid_str in result.stdout.strip().splitlines():
+                if pid_str.strip():
+                    try:
+                        os.kill(int(pid_str), signal.SIGTERM)
+                    except (ProcessLookupError, ValueError, PermissionError):
+                        pass
+    except Exception:
+        pass
 
 
 def _sumo_bin(name):
     """Return full path to a SUMO binary, ensuring env is set."""
-    sumo_home = os.environ.get("SUMO_HOME", SUMO_HOME_DEFAULT)
+    sumo_home = os.environ.get("SUMO_HOME") or _default_sumo_home()
     bin_dir = os.path.join(sumo_home, "bin")
     # Make sure subprocesses can find SUMO tools
     os.environ["SUMO_HOME"] = sumo_home
@@ -120,29 +181,8 @@ class SUMOIntegration:
             pass
 
         # Kill any stale SUMO processes that may be holding the port
+        _kill_stale_sumo(port)
         try:
-            import subprocess, signal
-            result = subprocess.run(
-                ["pgrep", "-f", f"sumo.*-c.*traci_config"],
-                capture_output=True, text=True, timeout=5,
-            )
-            for pid_str in result.stdout.strip().split("\n"):
-                if pid_str.strip():
-                    try:
-                        os.kill(int(pid_str), signal.SIGTERM)
-                    except (ProcessLookupError, ValueError):
-                        pass
-            # Also check for sumo processes on the specific port
-            result = subprocess.run(
-                ["lsof", "-ti", f":{port}"],
-                capture_output=True, text=True, timeout=5,
-            )
-            for pid_str in result.stdout.strip().split("\n"):
-                if pid_str.strip():
-                    try:
-                        os.kill(int(pid_str), signal.SIGTERM)
-                    except (ProcessLookupError, ValueError):
-                        pass
             import time as _t
             _t.sleep(0.5)  # Give processes time to die
         except Exception:

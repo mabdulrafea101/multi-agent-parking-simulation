@@ -159,6 +159,7 @@ def _initialize_database(state):
 
 
 def _get_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -639,7 +640,7 @@ def results():
 
     suppress_current_outputs = state.get("status") in ("running", "error")
     results_csv = os.path.join(SIMULATION_DIR, "output", "csv", "experiment_results.csv")
-    summary_csv = "/".join(results_csv.split("/")[:-1]) + "/summary_statistics.csv"
+    summary_csv = os.path.join(os.path.dirname(results_csv), "summary_statistics.csv")
 
     rows = []
     if not suppress_current_outputs and os.path.exists(results_csv):

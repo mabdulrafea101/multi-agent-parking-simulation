@@ -11,15 +11,28 @@ import subprocess
 import sys
 import time
 
-SIM_DIR = "/Users/mabdulrafea/Projects/hareem_tasks/multi-agent-parking-simulation/simulation"
+SIM_DIR = os.path.dirname(os.path.abspath(__file__))
 
 env = os.environ.copy()
-env["SUMO_HOME"] = "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo"
-env["PATH"] = env["SUMO_HOME"] + "/bin:" + env.get("PATH", "")
+if "SUMO_HOME" not in env:
+    sumo_candidates = [
+        "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo",
+        "/usr/share/sumo",
+        "/usr/local/share/sumo",
+    ]
+    sumo_home = next((p for p in sumo_candidates if os.path.isdir(p)), None)
+    if sumo_home:
+        env["SUMO_HOME"] = sumo_home
+if "SUMO_HOME" in env:
+    env["PATH"] = env["SUMO_HOME"] + os.sep + "bin" + os.pathsep + env.get("PATH", "")
 env["PYTHONUNBUFFERED"] = "1"
 
 try:
-    subprocess.run(["pkill", "-f", "sumo.*remote-port"], timeout=5)
+    if sys.platform.startswith("win"):
+        subprocess.run(["taskkill", "/F", "/IM", "sumo.exe"], timeout=5, capture_output=True)
+        subprocess.run(["taskkill", "/F", "/IM", "sumo-gui.exe"], timeout=5, capture_output=True)
+    else:
+        subprocess.run(["pkill", "-f", "sumo.*remote-port"], timeout=5)
 except Exception:
     pass
 
