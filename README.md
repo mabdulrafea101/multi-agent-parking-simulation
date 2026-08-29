@@ -117,20 +117,28 @@ Verify in PowerShell:
 python --version
 ```
 
-### 2. Install SUMO (optional but recommended)
-
-You have two options on Windows:
-
-**Option A — pip wheel (recommended, no admin, no MSI)**:
+### 2. Clone the repo and create the venv
 
 ```powershell
-venv\Scripts\python.exe -m pip install eclipse-sumo traci sumolib
+git clone <your-fork-url> multi-agent-parking-simulation
+cd multi-agent-parking-simulation
+python -m venv venv
 ```
 
-This installs the full SUMO toolchain (binaries, libs, data files) inside
-your venv at `venv\Lib\site-packages\sumo\bin\` and the Python `traci` /
-`sumolib` modules. No `SUMO_HOME` env var needed — the project
-auto-detects the venv location.
+### 3. Install SUMO (optional but recommended)
+
+You have two options on Windows. The pip wheel (Option A) is recommended
+because it requires no admin rights, no MSI, and no `SUMO_HOME` env var.
+
+**Option A — pip wheel (recommended)**:
+
+```powershell
+venv\Scripts\python.exe -m pip install eclipse-sumo
+```
+
+This installs the full SUMO 1.27 toolchain (binaries, libs, data files)
+inside your venv at `venv\Lib\site-packages\sumo\bin\`. The project
+auto-detects this path.
 
 **Option B — official MSI installer**:
 
@@ -141,42 +149,66 @@ https://sumo.dlr.de/docs/Downloads.php and install to one of:
 - `C:\Program Files\Eclipse SUMO`
 - `C:\SUMO`
 
-If you install elsewhere, set the `SUMO_HOME` env var to the `share/sumo`
-subdirectory inside the install (e.g. `C:\SUMO\share\sumo`). The launchers
-auto-detect the three paths above, so a default install needs no env var.
+If you install elsewhere, set the `SUMO_HOME` env var to the directory
+that contains `bin/`, `share/`, and `data/` (e.g. `C:\SUMO`).
 
-After either option, also install the Python `traci` / `sumolib` modules
-from PyPI (the MSI install does not include them):
+If you skip this step entirely, the dashboard and all scripts still
+work — they will run in Mesa-only mode and the `sumo_connected` column
+in `output/csv/experiment_results.csv` will be `False` for every row.
+
+### 4. Install all Python dependencies from `requirements.txt`
+
 ```powershell
-venv\Scripts\python.exe -m pip install traci sumolib
+venv\Scripts\python.exe -m pip install --upgrade pip
+venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 3. Clone and create the venv
+`requirements.txt` is generated from `pip freeze` and includes the SUMO
+wheel (if you went with Option A) plus all Python packages: `mesa`,
+`numpy`, `pandas`, `scipy`, `matplotlib`, `flask`, `osmnx`, `pyproj`,
+`seaborn`, `pytest`, `traci`, `sumolib`, and their transitive deps
+(`geopandas`, `shapely`, `networkx`, etc.). If you used Option B (MSI),
+this step also installs the matching `traci` and `sumolib` Python
+modules from PyPI.
+
+### 5. Verify the install (optional but recommended)
+
+```powershell
+venv\Scripts\python.exe -c "import traci, sumolib; from engine.sumo_integration import _sumo_bin; import os; print('traci:', traci.__file__); print('sumolib:', sumolib.__file__); print('sumo binary:', _sumo_bin('sumo'))"
+```
+
+You should see a non-empty path under `venv\Lib\site-packages\sumo\bin\`
+(or your MSI install path) for the `sumo binary` line.
+
+### 6. Run the dashboard
+
+```powershell
+# PowerShell
+.\run_dashboard.ps1
+.\run_dashboard.ps1 -Port 5050 -NoDebug
+
+# CMD (double-click run_dashboard.bat or:)
+run_dashboard.bat
+run_dashboard.bat --port 5050 --no-debug
+```
+
+The `.bat` and `.ps1` scripts are equivalent. PowerShell offers named
+parameters (`-Port`, `-NoDebug`); CMD uses long flags (`--port 5050`,
+`--no-debug`).
+
+Open http://127.0.0.1:5000 in your browser.
+
+### TL;DR — full command sequence on Windows
 
 ```powershell
 git clone <your-fork-url> multi-agent-parking-simulation
 cd multi-agent-parking-simulation
 python -m venv venv
-```
-
-### 4. Install Python dependencies
-
-```powershell
 venv\Scripts\python.exe -m pip install --upgrade pip
-venv\Scripts\python.exe -m pip install mesa numpy pandas scipy matplotlib flask osmnx pyproj seaborn pytest
-```
-
-`traci` and `sumolib` are not on PyPI — they ship with SUMO itself. The
-project imports them defensively, so the dashboard and Mesa-only runs work
-without SUMO.
-
-### 5. Run the dashboard
-
-```powershell
+venv\Scripts\python.exe -m pip install eclipse-sumo
+venv\Scripts\python.exe -m pip install -r requirements.txt
 .\run_dashboard.ps1
 ```
-
-Open http://127.0.0.1:5000 in your browser.
 
 ---
 
@@ -191,40 +223,7 @@ brew install python@3.14
 
 Or download from https://www.python.org/downloads/macos/.
 
-### 2. Install SUMO (optional but recommended)
-
-You have two options on macOS:
-
-**Option A — pip wheel (recommended, no Homebrew, no GUI package)**:
-
-```bash
-./venv/bin/pip install eclipse-sumo traci sumolib
-```
-
-This installs the full SUMO toolchain (binaries, libs, data files) inside
-your venv. No `SUMO_HOME` env var needed — the project auto-detects the
-venv location.
-
-**Option B — Homebrew**:
-
-```bash
-brew install sumo
-```
-
-This installs SUMO under `/opt/homebrew/opt/sumo/share/sumo` (Apple Silicon)
-or `/usr/local/opt/sumo/share/sumo` (Intel). Both paths are auto-detected by
-the launchers. To use a manual install, set:
-```bash
-export SUMO_HOME="/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo"
-```
-
-After Option B, also install the Python `traci` / `sumolib` modules from
-PyPI (Homebrew does not include them):
-```bash
-./venv/bin/pip install traci sumolib
-```
-
-### 3. Clone and create the venv
+### 2. Clone the repo and create the venv
 
 ```bash
 git clone <your-fork-url> multi-agent-parking-simulation
@@ -232,23 +231,81 @@ cd multi-agent-parking-simulation
 python3 -m venv venv
 ```
 
-### 4. Install Python dependencies
+### 3. Install SUMO (optional but recommended)
+
+You have two options on macOS. The pip wheel (Option A) is recommended
+because it requires no Homebrew, no GUI pkg, and no `SUMO_HOME` env var.
+
+**Option A — pip wheel (recommended)**:
+
+```bash
+./venv/bin/pip install eclipse-sumo
+```
+
+This installs the full SUMO 1.27 toolchain (binaries, libs, data files)
+inside your venv. The project auto-detects this path.
+
+**Option B — Homebrew**:
+
+```bash
+brew install sumo
+```
+
+This installs SUMO under `/opt/homebrew/opt/sumo/share/sumo` (Apple
+Silicon) or `/usr/local/opt/sumo/share/sumo` (Intel). Both paths are
+auto-detected by the launchers. To use a manual install, set:
+```bash
+export SUMO_HOME="/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo"
+```
+
+If you skip this step entirely, the dashboard and all scripts still
+work — they will run in Mesa-only mode and the `sumo_connected` column
+in `output/csv/experiment_results.csv` will be `False` for every row.
+
+### 4. Install all Python dependencies from `requirements.txt`
 
 ```bash
 ./venv/bin/python -m pip install --upgrade pip
-./venv/bin/python -m pip install mesa numpy pandas scipy matplotlib flask osmnx pyproj seaborn pytest
+./venv/bin/python -m pip install -r requirements.txt
 ```
 
-`traci` and `sumolib` ship with SUMO; they are auto-imported by the project
-from `$SUMO_HOME/tools` when present.
+`requirements.txt` is generated from `pip freeze` and includes the SUMO
+wheel (if you went with Option A) plus all Python packages: `mesa`,
+`numpy`, `pandas`, `scipy`, `matplotlib`, `flask`, `osmnx`, `pyproj`,
+`seaborn`, `pytest`, `traci`, `sumolib`, and their transitive deps. If
+you used Option B (Homebrew), this step also installs the matching
+`traci` and `sumolib` Python modules from PyPI.
 
-### 5. Run the dashboard
+### 5. Verify the install (optional but recommended)
 
 ```bash
-./run_dashboard.sh
+./venv/bin/python -c "import traci, sumolib; from engine.sumo_integration import _sumo_bin; import os; print('traci:', traci.__file__); print('sumolib:', sumolib.__file__); print('sumo binary:', _sumo_bin('sumo'))"
 ```
 
-Open http://127.0.0.1:5000 in your browser.
+You should see a non-empty path under `venv/lib/python*/site-packages/sumo/bin/`
+(or your Homebrew install path) for the `sumo binary` line.
+
+### 6. Run the dashboard
+
+```bash
+./run_dashboard.sh                # default port 5000, debug on
+./run_dashboard.sh --port 5050    # custom port
+./run_dashboard.sh --no-debug     # disable debug / reloader
+```
+
+Open http://127.0.0.1:5000 (or your chosen port) in a browser.
+
+### TL;DR — full command sequence on macOS
+
+```bash
+git clone <your-fork-url> multi-agent-parking-simulation
+cd multi-agent-parking-simulation
+python3 -m venv venv
+./venv/bin/python -m pip install --upgrade pip
+./venv/bin/pip install eclipse-sumo
+./venv/bin/python -m pip install -r requirements.txt
+./run_dashboard.sh
+```
 
 ---
 
@@ -262,8 +319,9 @@ sudo apt install python3-venv python3-dev sumo  # Debian/Ubuntu
 git clone <your-fork-url> multi-agent-parking-simulation
 cd multi-agent-parking-simulation
 python3 -m venv venv
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install mesa numpy pandas scipy matplotlib flask osmnx pyproj seaborn pytest
+./venv/bin/python -m pip install --upgrade pip
+./venv/bin/pip install eclipse-sumo
+./venv/bin/python -m pip install -r requirements.txt
 ./run_dashboard.sh
 ```
 
