@@ -75,9 +75,9 @@ multi-agent-parking-simulation/
 ├── experiments.py             # Batch experiment runner
 ├── main.py                    # CLI entry point
 ├── run_exp_python.py          # Cross-platform experiment driver
-├── run_dashboard.sh / .ps1    # Dashboard launcher
-├── run_experiments.sh / .ps1  # Full 480-experiment suite launcher
-└── run_experiments_retry.sh / .ps1  # Same as above with timestamped backups
+├── run_dashboard.sh / .ps1 / .bat    # Dashboard launcher
+├── run_experiments.sh / .ps1 / .bat  # Full 480-experiment suite launcher
+└── run_experiments_retry.sh / .ps1 / .bat  # Same as above with timestamped backups
 ```
 
 ---
@@ -269,10 +269,18 @@ recorded frames in a 3D Three.js viewer.
 
 ### Windows
 ```powershell
+# PowerShell
 .\run_dashboard.ps1
-# optional flags
 .\run_dashboard.ps1 -Port 5050 -NoDebug
+
+# CMD (double-click run_dashboard.bat or:)
+run_dashboard.bat
+run_dashboard.bat --port 5050 --no-debug
 ```
+
+The `.bat` and `.ps1` scripts are equivalent. PowerShell offers named
+parameters (`-Port`, `-NoDebug`); CMD uses long flags (`--port 5050`,
+`--no-debug`).
 
 ### macOS / Linux
 ```bash
@@ -321,15 +329,19 @@ logging, output verification, and stale-process cleanup.
 
 ### Windows
 ```powershell
-# default 30 replications
+# PowerShell
 .\run_experiments.ps1
-
-# custom replication count
 .\run_experiments.ps1 -Replications 5
-
-# variant with timestamped backups (matches the original retry script)
 .\run_experiments_retry.ps1
+
+# CMD
+run_experiments.bat
+run_experiments.bat 5
+run_experiments_retry.bat
 ```
+
+In CMD, pass the replication count as the first positional argument
+(e.g. `run_experiments.bat 5`).
 
 ### macOS / Linux
 ```bash
@@ -468,7 +480,16 @@ captures. Check `output/experiment_run.log` for run output, and
 ### `pkill`/`lsof`/`pgrep` not found (Windows)
 These commands don't exist on Windows. The project detects the platform and
 uses `taskkill` instead — no action needed if you use the bundled scripts
-(`run_dashboard.ps1`, `run_experiments.ps1`).
+(`run_dashboard.ps1`/`.bat`, `run_experiments.ps1`/`.bat`).
+
+### PowerShell execution policy blocks `.ps1` scripts
+On a fresh Windows machine, the default execution policy may prevent running
+`.ps1` scripts. Either:
+- Use the `.bat` versions instead (`run_dashboard.bat`, `run_experiments.bat`)
+- Or allow local scripts in PowerShell:
+  ```powershell
+  Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+  ```
 
 ---
 
