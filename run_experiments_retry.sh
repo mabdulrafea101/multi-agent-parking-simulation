@@ -5,13 +5,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-export SUMO_HOME="/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo"
-export PATH="$SUMO_HOME/bin:$PATH"
+# Ask the same resolver the simulation uses instead of assuming an install path:
+# exporting a SUMO_HOME that does not exist would override detection entirely.
+if [ -z "${SUMO_HOME:-}" ]; then
+    PROBE_PYTHON="./venv/bin/python"
+    [ -x "$PROBE_PYTHON" ] || PROBE_PYTHON="python3"
+    SUMO_HOME="$("$PROBE_PYTHON" -c 'from engine.sumo_integration import _default_sumo_home; print(_default_sumo_home())' 2>/dev/null || true)"
+fi
+if [ -n "${SUMO_HOME:-}" ] && [ -d "$SUMO_HOME" ]; then
+    export SUMO_HOME
+    export PATH="$SUMO_HOME/bin:$PATH"
+else
+    unset SUMO_HOME
+fi
 export PYTHONUNBUFFERED=1
 
 echo "=== 480-Experiment Suite ==="
 echo "Start: $(date)"
-echo "SUMO_HOME: $SUMO_HOME"
+echo "SUMO_HOME: ${SUMO_HOME:-not found (Mesa-only)}"
 
 mkdir -p output/csv output/figures output/tables output/sumo
 

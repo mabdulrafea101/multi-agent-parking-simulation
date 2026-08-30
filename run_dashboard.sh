@@ -11,15 +11,15 @@ export FLASK_APP="app:create_app"
 export FLASK_ENV="development"
 export PYTHONUNBUFFERED=1
 
-# SUMO configuration (optional — simulation falls back to Mesa-only if absent)
+# SUMO configuration (optional — simulation falls back to Mesa-only if absent).
+# Ask the same resolver the simulation uses, so this banner can never disagree
+# with what the app actually finds (pip wheel, Homebrew, apt or MSI install).
 if [ -z "${SUMO_HOME:-}" ]; then
-    # Common macOS Homebrew path
-    if [ -d "/opt/homebrew/opt/sumo/share/sumo" ]; then
-        export SUMO_HOME="/opt/homebrew/opt/sumo/share/sumo"
-    elif [ -d "/usr/local/opt/sumo/share/sumo" ]; then
-        export SUMO_HOME="/usr/local/opt/sumo/share/sumo"
-    fi
-    if [ -n "${SUMO_HOME:-}" ]; then
+    PROBE_PYTHON="./venv/bin/python"
+    [ -x "$PROBE_PYTHON" ] || PROBE_PYTHON="python3"
+    PROBED_HOME="$("$PROBE_PYTHON" -c 'from engine.sumo_integration import _default_sumo_home; print(_default_sumo_home())' 2>/dev/null || true)"
+    if [ -n "$PROBED_HOME" ]; then
+        export SUMO_HOME="$PROBED_HOME"
         export PATH="$SUMO_HOME/bin:$PATH"
         echo "[run_dashboard] SUMO_HOME=$SUMO_HOME"
     else

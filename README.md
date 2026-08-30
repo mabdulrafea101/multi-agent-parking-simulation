@@ -429,7 +429,8 @@ parameters (`-Port`, `-NoDebug`); CMD uses long flags (`--port 5050`,
 
 The script:
 - sets `FLASK_APP=app:create_app`
-- probes for SUMO under standard install paths and exports `SUMO_HOME`
+- probes for SUMO with the same resolver the simulation uses (`_default_sumo_home()`)
+  and exports `SUMO_HOME` from it, so the banner can't disagree with the app
 - creates `output/csv`, `output/figures`, `output/tables` if missing
 - starts Flask on `127.0.0.1:$PORT`
 
@@ -489,7 +490,8 @@ In CMD, pass the replication count as the first positional argument
 ```
 
 What the scripts do:
-1. Probe and export `SUMO_HOME` if not already set
+1. Resolve `SUMO_HOME` via the simulation's own `_default_sumo_home()` probe
+   (pip wheel, Homebrew, apt or MSI) and export it only when found
 2. Back up any existing `experiment_results.csv`, `summary_statistics.csv`,
    `por_timeseries.csv` (the original script renames to `*_v1_mesamostly.csv`;
    the retry variant uses a Unix timestamp suffix)

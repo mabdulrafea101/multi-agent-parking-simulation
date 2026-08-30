@@ -14,24 +14,19 @@ $env:FLASK_APP = "app:create_app"
 $env:FLASK_ENV = "development"
 $env:PYTHONUNBUFFERED = "1"
 
-# SUMO configuration (optional — simulation falls back to Mesa-only if absent)
+# SUMO configuration (optional — simulation falls back to Mesa-only if absent).
+# Ask the same resolver the simulation uses, so this banner can never disagree
+# with what the app actually finds (pip wheel, Homebrew, apt or MSI install).
 if (-not $env:SUMO_HOME) {
-    $sumoCandidates = @(
-        "C:\Program Files (x86)\Eclipse SUMO",
-        "C:\Program Files\Eclipse SUMO",
-        "C:\SUMO"
-    )
-    foreach ($p in $sumoCandidates) {
-        if (Test-Path $p) {
-            $env:SUMO_HOME = $p
-            $env:PATH = "$p\bin;$env:PATH"
-            Write-Host "[run_dashboard] SUMO_HOME=$p"
-            break
-        }
-    }
-    if (-not $env:SUMO_HOME) {
-        Write-Host "[run_dashboard] SUMO not found - running in Mesa-only mode"
-    }
+    $probe = "from engine.sumo_integration import _default_sumo_home; print(_default_sumo_home())"
+    $probed = & venv\Scripts\python.exe -c $probe 2>$null
+    if ($probed) { $env:SUMO_HOME = "$probed".Trim() }
+}
+if ($env:SUMO_HOME) {
+    $env:PATH = "$env:SUMO_HOME\bin;$env:PATH"
+    Write-Host "[run_dashboard] SUMO_HOME=$env:SUMO_HOME"
+} else {
+    Write-Host "[run_dashboard] SUMO not found - running in Mesa-only mode"
 }
 
 # --- Ensure outputs exist ---

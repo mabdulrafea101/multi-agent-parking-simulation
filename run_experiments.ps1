@@ -11,19 +11,12 @@ $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
 # --- Environment setup ---
-# Probe common SUMO install paths if SUMO_HOME is not already set
+# Ask the same resolver the simulation uses, so this echo can never disagree
+# with what the app actually finds (pip wheel, Homebrew, apt or MSI install).
 if (-not $env:SUMO_HOME) {
-    $sumoCandidates = @(
-        "C:\Program Files (x86)\Eclipse SUMO",
-        "C:\Program Files\Eclipse SUMO",
-        "C:\SUMO"
-    )
-    foreach ($p in $sumoCandidates) {
-        if (Test-Path $p) {
-            $env:SUMO_HOME = $p
-            break
-        }
-    }
+    $probe = "from engine.sumo_integration import _default_sumo_home; print(_default_sumo_home())"
+    $probed = & .\venv\Scripts\python.exe -c $probe 2>$null
+    if ($probed) { $env:SUMO_HOME = "$probed".Trim() }
 }
 if ($env:SUMO_HOME) {
     $env:PATH = "$env:SUMO_HOME\bin;$env:PATH"

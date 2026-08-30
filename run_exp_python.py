@@ -15,14 +15,12 @@ SIM_DIR = os.path.dirname(os.path.abspath(__file__))
 
 env = os.environ.copy()
 if "SUMO_HOME" not in env:
-    sumo_candidates = [
-        "/Library/Frameworks/EclipseSUMO.framework/Versions/Current/EclipseSUMO/share/sumo",
-        "/usr/share/sumo",
-        "/usr/local/share/sumo",
-    ]
-    sumo_home = next((p for p in sumo_candidates if os.path.isdir(p)), None)
-    if sumo_home:
-        env["SUMO_HOME"] = sumo_home
+    # Use the same resolver the simulation falls back to, rather than a second
+    # list of install paths that can drift from it.
+    from engine.sumo_integration import _default_sumo_home
+    detected_home = _default_sumo_home()
+    if detected_home:
+        env["SUMO_HOME"] = detected_home
 if "SUMO_HOME" in env:
     env["PATH"] = env["SUMO_HOME"] + os.sep + "bin" + os.pathsep + env.get("PATH", "")
 env["PYTHONUNBUFFERED"] = "1"

@@ -12,15 +12,11 @@ set "FLASK_ENV=development"
 set "PYTHONUNBUFFERED=1"
 
 REM --- SUMO configuration (optional) ---
-if not defined SUMO_HOME (
-    if exist "C:\Program Files (x86)\Eclipse SUMO" (
-        set "SUMO_HOME=C:\Program Files (x86)\Eclipse SUMO"
-    ) else if exist "C:\Program Files\Eclipse SUMO" (
-        set "SUMO_HOME=C:\Program Files\Eclipse SUMO"
-    ) else if exist "C:\SUMO" (
-        set "SUMO_HOME=C:\SUMO"
-    )
-)
+REM Ask the same resolver the simulation uses, so this banner can never disagree
+REM with what the app actually finds (pip wheel, Homebrew, apt or MSI install).
+if defined SUMO_HOME goto sumo_ready
+for /f "usebackq delims=" %%i in (`venv\Scripts\python.exe -c "from engine.sumo_integration import _default_sumo_home; print(_default_sumo_home())" 2^>nul`) do set "SUMO_HOME=%%i"
+:sumo_ready
 if defined SUMO_HOME (
     set "PATH=%SUMO_HOME%\bin;%PATH%"
     echo [run_dashboard] SUMO_HOME=%SUMO_HOME%
