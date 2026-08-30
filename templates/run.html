@@ -222,6 +222,10 @@ pollProgress();
                     {% endfor %}
                 </select>
                 <span class="selector-hint">Used only for real city OSM simulations.</span>
+                <label for="refresh_osm" style="display: flex; align-items: center; gap: 0.4rem; margin-top: 0.6rem; font-size: 0.78rem; color: #334155; cursor: pointer;">
+                    <input type="checkbox" name="refresh_osm" id="refresh_osm" value="1">
+                    Re-download OSM data
+                </label>
             </div>
             <div class="field-card">
                 <label for="replications">Replications per Scenario x Strategy</label>
@@ -256,6 +260,7 @@ function toggleCitySelector() {
     cityField.classList.toggle('is-hidden', !showCity);
     if (!showCity) {
         citySelect.value = '';
+        document.getElementById('refresh_osm').checked = false;
     }
 }
 

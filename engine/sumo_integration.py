@@ -286,6 +286,35 @@ class SUMOIntegration:
         self.connected = False
 
 
+def _city_cache_dir(city_name, output_dir="output/sumo"):
+    """Return the network cache directory for a supported city, or None."""
+    try:
+        city = get_city_config(city_name)
+    except ValueError:
+        return None
+    resolved = city.get("name") or city.get("city_name") or city_name
+    return os.path.join(output_dir, resolved)
+
+
+def clear_city_cache(city_name, output_dir="output/sumo"):
+    """Delete a city's cached OSM and network files so the next run re-fetches."""
+    cache_dir = _city_cache_dir(city_name, output_dir)
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return []
+
+    city_key = os.path.basename(cache_dir)
+    removed = []
+    for suffix in (".osm.xml", ".net.xml"):
+        path = os.path.join(cache_dir, city_key + suffix)
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+                removed.append(path)
+            except OSError as e:
+                print(f"  OSM: could not clear {path} ({e})")
+    return removed
+
+
 class OSMCityIntegration(SUMOIntegration):
     """Build and cache SUMO networks from configured OSM city areas."""
 
@@ -324,6 +353,7 @@ class OSMCityIntegration(SUMOIntegration):
         city_name = city.get("name") or city.get("city_name") or self.city_name or "city"
         osm_file = os.path.join(cache_dir, f"{city_name}.osm.xml")
         if os.path.exists(osm_file) and os.path.getsize(osm_file) > 0:
+            print(f"  OSM: using cached data at {osm_file}")
             return osm_file
 
         south = bounds["lat_min"]
@@ -347,10 +377,16 @@ class OSMCityIntegration(SUMOIntegration):
         )
 
         try:
+            print(f"  OSM: downloading '{city_name}' from Overpass (once per machine)...")
             with urllib.request.urlopen(request, timeout=240) as response:
                 osm_xml = response.read()
-            with open(osm_file, "wb") as f:
+            # Staged write: a killed download must never leave a partial file
+            # that later runs would mistake for a warm cache.
+            partial_file = osm_file + ".part"
+            with open(partial_file, "wb") as f:
                 f.write(osm_xml)
+            os.replace(partial_file, osm_file)
+            print(f"  OSM: cached {len(osm_xml)} bytes at {osm_file}")
             return osm_file
         except Exception as e:
             print(f"  OSM: Overpass download failed ({e})")
@@ -376,6 +412,7 @@ class OSMCityIntegration(SUMOIntegration):
                 self.network = sumolib.net.readNet(net_file)
             except Exception:
                 self.network = None
+            print(f"  SUMO: using cached network at {net_file}")
             return net_file
 
         nc_bin = _sumo_bin("netconvert")
@@ -394,6 +431,7 @@ class OSMCityIntegration(SUMOIntegration):
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
             self.network = sumolib.net.readNet(net_file)
+            print(f"  SUMO: built network once at {net_file}")
             return net_file
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"  SUMO: OSM netconvert failed ({e})")

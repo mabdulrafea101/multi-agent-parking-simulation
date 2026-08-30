@@ -72,6 +72,17 @@ class ExperimentRunner:
             progress_callback=progress_callback,
         )
 
+    @staticmethod
+    def _clear_city_cache(city):
+        """Drop cached OSM/network files so the next batch re-downloads them once."""
+        from engine.sumo_integration import clear_city_cache
+
+        removed = clear_city_cache(city)
+        if removed:
+            print(f"OSM: cleared {len(removed)} cached file(s) for {city}")
+        else:
+            print(f"OSM: nothing cached for {city}, will download on first replication")
+
     def run_batch(
         self,
         scenarios=None,
@@ -81,6 +92,7 @@ class ExperimentRunner:
         parallel=False,
         simulation_type="mesa",
         city=None,
+        refresh_osm=False,
         progress_callback=None,
     ):
         """Run a batch with an explicit simulation backend selection."""
@@ -92,6 +104,7 @@ class ExperimentRunner:
             parallel=parallel,
             simulation_type=simulation_type,
             city=city,
+            refresh_osm=refresh_osm,
             progress_callback=progress_callback,
         )
 
@@ -104,12 +117,15 @@ class ExperimentRunner:
         parallel=False,
         simulation_type="mesa",
         city=None,
+        refresh_osm=False,
         progress_callback=None,
     ):
         """Run selected scenario x strategy x replication experiment batches."""
         del parallel
         simulation_type = simulation_type or "mesa"
         city = city if simulation_type == "osm_city" else None
+        if refresh_osm and city:
+            self._clear_city_cache(city)
         if scenarios is None:
             scenarios = _ordered_available(SCENARIO_ORDER, self.scenarios_config["scenarios"])
         else:
@@ -350,9 +366,17 @@ def parse_args():
         choices=["mesa", "sumo", "osm_city"],
         default="mesa",
         help="Backend: 'mesa' (Mesa-only), 'sumo' (Mesa + SUMO synthetic net), "
-             "'osm_city' (Mesa + SUMO + OSM real network). Default: mesa.",
+             "'osm_city' (Mesa + SUMO + a configured city's OpenStreetMap network, "
+             "downloaded and converted once then reused from output/sumo/<city>). "
+             "Default: mesa.",
     )
     parser.add_argument("--city", default=None, help="City key (e.g. kuala_lumpur) when --simulation-type=osm_city")
+    parser.add_argument(
+        "--refresh-osm",
+        action="store_true",
+        help="Delete the cached OSM/network files for --city before the batch so they are "
+             "re-downloaded once. Without this flag the cached network is reused.",
+    )
     return parser.parse_args()
 
 
@@ -367,6 +391,7 @@ def main():
         replication_end=args.replications,
         simulation_type=args.simulation_type,
         city=args.city,
+        refresh_osm=args.refresh_osm,
     )
 
 

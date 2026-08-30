@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import ParkingModel
 from recorder import FrameRecorder
 from experiments import ExperimentRunner
-from engine.sumo_integration import SUMOIntegration, OSMIntegration
 
 
 def main():
@@ -38,7 +37,9 @@ def main():
     parser.add_argument("--gui", action="store_true",
                        help="Run with SUMO GUI")
     parser.add_argument("--osm", type=str, default=None,
-                       help="OpenStreetMap place name for road network")
+                       help="OSM road network source: a supported city key "
+                            "(kuala_lumpur, penang, johor_bahru) uses the cached network built from that "
+                            "city's bounds; any other value is treated as a free-text osmnx place name")
     parser.add_argument("--output-dir", default="output",
                        help="Output directory")
     
@@ -54,17 +55,9 @@ def main():
     os.makedirs(os.path.join(args.output_dir, "figures"), exist_ok=True)
     os.makedirs(os.path.join(args.output_dir, "tables"), exist_ok=True)
     
-    # OSM Integration (optional)
-    osm_data = None
-    if args.osm:
-        print(f"\nDownloading OSM data for: {args.osm}")
-        osm = OSMIntegration()
-        osm_data = osm.download_area(args.osm)
-        if osm_data:
-            print(f"Downloaded {len(osm_data.nodes)} nodes, {len(osm_data.edges)} edges")
-        else:
-            print("OSM download failed, using synthetic grid")
-    
+    # OSM networks are resolved by ParkingModel.init_sumo below, which reuses
+    # cached city data instead of re-querying Overpass for every replication.
+
     # Run experiments
     if args.all_scenarios:
         print("\nRunning all scenarios x strategies x replications...")

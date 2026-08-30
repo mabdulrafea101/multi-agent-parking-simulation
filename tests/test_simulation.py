@@ -17,6 +17,92 @@ from model import ParkingModel
 from experiments import ExperimentRunner
 
 
+def test_refresh_osm_clears_city_cache_once_per_batch(tmp_path, monkeypatch):
+    cleared = []
+    single_run_kwargs = []
+
+    monkeypatch.setattr(
+        "engine.sumo_integration.clear_city_cache",
+        lambda city, **kwargs: cleared.append(city),
+    )
+
+    runner = ExperimentRunner.__new__(ExperimentRunner)
+    runner.scenarios_config = {
+        "scenarios": {"low_demand": {}, "high_demand": {}},
+        "strategies": {"auction": {}},
+    }
+    runner.results_dir = str(tmp_path)
+    runner.figures_dir = str(tmp_path)
+    runner.tables_dir = str(tmp_path)
+
+    def fake_run_single(scenario, strategy, rep, **kwargs):
+        single_run_kwargs.append(kwargs)
+        return {
+            "scenario": scenario,
+            "strategy": strategy,
+            "replication": rep,
+            "total_arrivals": 1,
+            "total_successful": 1,
+            "total_failed": 0,
+            "mean_pst": 1.0,
+            "std_por": 0.1,
+            "rsr": 100.0,
+            "mean_utility": 1.0,
+            "tfi": 0.0,
+            "sumo_connected": True,
+            "_timeseries": [],
+        }
+
+    runner.run_single = fake_run_single
+    runner.save_summary = lambda results: None
+
+    runner.run_batch(
+        replication_end=2,
+        simulation_type="osm_city",
+        city="penang",
+        refresh_osm=True,
+    )
+
+    assert cleared == ["penang"]
+    assert len(single_run_kwargs) == 4
+    assert all("refresh_osm" not in kwargs for kwargs in single_run_kwargs)
+
+
+def test_batch_keeps_city_cache_when_refresh_not_requested(tmp_path, monkeypatch):
+    cleared = []
+    monkeypatch.setattr(
+        "engine.sumo_integration.clear_city_cache",
+        lambda city, **kwargs: cleared.append(city),
+    )
+
+    runner = ExperimentRunner.__new__(ExperimentRunner)
+    runner.scenarios_config = {
+        "scenarios": {"low_demand": {}},
+        "strategies": {"auction": {}},
+    }
+    runner.results_dir = str(tmp_path)
+    runner.save_summary = lambda results: None
+    runner.run_single = lambda scenario, strategy, rep, **kwargs: {
+        "scenario": scenario,
+        "strategy": strategy,
+        "replication": rep,
+        "total_arrivals": 0,
+        "total_successful": 0,
+        "total_failed": 0,
+        "mean_pst": 0.0,
+        "std_por": 0.0,
+        "rsr": 0.0,
+        "mean_utility": 0.0,
+        "tfi": 0.0,
+        "sumo_connected": False,
+        "_timeseries": [],
+    }
+
+    runner.run_batch(replication_end=1, simulation_type="osm_city", city="penang")
+
+    assert cleared == []
+
+
 def test_batch_persists_por_timeseries_for_every_scenario(tmp_path):
     runner = ExperimentRunner.__new__(ExperimentRunner)
     runner.scenarios_config = {

@@ -13,10 +13,17 @@ from agents.driver_agent import DriverAgent
 from agents.parking_spot_agent import ParkingSpotAgent
 from agents.coordinator_agent import CoordinatorAgent
 try:
-    from engine.sumo_integration import SUMOIntegration, OSMIntegration
+    from engine.sumo_integration import (
+        SUMOIntegration,
+        OSMIntegration,
+        OSMCityIntegration,
+    )
+    from engine.cities import get_city_config
 except ImportError:
     SUMOIntegration = None
     OSMIntegration = None
+    OSMCityIntegration = None
+    get_city_config = None
 
 
 class ParkingModel(mesa.Model):
@@ -113,15 +120,40 @@ class ParkingModel(mesa.Model):
         
         return spots
     
+    @staticmethod
+    def _resolve_city_config(place):
+        """Return a supported city's config, or None for a free-text place name."""
+        if not place or get_city_config is None:
+            return None
+        try:
+            return get_city_config(place)
+        except ValueError:
+            return None
+
     def init_sumo(self, gui=False, osm_place=None):
         """Initialize SUMO/TraCI integration. Falls back to Mesa-only mode on failure."""
         if self.use_sumo:
             return
 
         try:
-            self.sumo = SUMOIntegration(self.config)
+            city_config = self._resolve_city_config(osm_place)
+            use_city_network = city_config is not None and OSMCityIntegration is not None
 
-            if osm_place:
+            self.sumo = (
+                OSMCityIntegration(self.config, city_name=city_config["name"])
+                if use_city_network
+                else SUMOIntegration(self.config)
+            )
+
+            if use_city_network:
+                net_file = self.sumo.prepare_city_network(city_config["name"])
+                if net_file:
+                    self._sumo_net_file = net_file
+                    print(f"  SUMO: Using city network at {net_file}")
+                else:
+                    print("  SUMO: City network unavailable, using synthetic network")
+                    self._sumo_net_file = self.sumo.create_synthetic_network()
+            elif osm_place:
                 print(f"  SUMO: Downloading OSM data for '{osm_place}'...")
                 osm = OSMIntegration()
                 graph = osm.download_area(osm_place)

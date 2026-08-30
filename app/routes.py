@@ -331,11 +331,12 @@ def _write_summary_csv(path, summary_rows):
         writer.writerows(summary_rows)
 
 
-def _run_experiment_async(scenario, strategy, replications, simulation_type="mesa", city=None):
+def _run_experiment_async(scenario, strategy, replications, simulation_type="mesa", city=None, refresh_osm=False):
     """Run the experiment in a background thread."""
     global experiment_state
     simulation_type = simulation_type or "mesa"
     city = city if simulation_type == "osm_city" else None
+    refresh_osm = bool(refresh_osm and city)
     selected_scenarios = [scenario] if scenario else None
     selected_strategies = [strategy] if strategy else None
     total_runs = (len(selected_scenarios) if selected_scenarios else 4) * (
@@ -394,6 +395,7 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
             replication_end=int(replications),
             simulation_type=simulation_type,
             city=city,
+            refresh_osm=refresh_osm,
             progress_callback=on_progress,
         )
 
@@ -566,6 +568,7 @@ def run_experiment():
         city = request.form.get("city") or None
         if simulation_type != "osm_city":
             city = None
+        refresh_osm = bool(request.form.get("refresh_osm")) and city is not None
 
         with experiment_lock:
             if experiment_state["status"] == "running":
@@ -596,7 +599,7 @@ def run_experiment():
             )
             thread = threading.Thread(
                 target=_run_experiment_async,
-                args=(scenario, strategy, replications, simulation_type, city),
+                args=(scenario, strategy, replications, simulation_type, city, refresh_osm),
                 daemon=True,
             )
             experiment_thread = thread

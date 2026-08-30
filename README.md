@@ -66,7 +66,7 @@ multi-agent-parking-simulation/
 │   ├── csv/                   # Raw + aggregated results
 │   ├── figures/               # Generated plots
 │   ├── tables/                # Generated tables
-│   ├── sumo/                  # Generated SUMO networks
+│   ├── sumo/                  # Generated networks + <city>/ OSM download cache
 │   └── viz/                   # Recorded frames for 3D visualization
 ├── analysis.py                # Results analysis and visualization
 ├── chapter4_analysis.py       # Chapter 4 specific analysis
@@ -363,10 +363,29 @@ python experiments.py --all-scenarios --replications 30
 # Mesa + SUMO synthetic grid (auto-selected when SUMO is installed)
 python experiments.py --all-scenarios --replications 30 --simulation-type sumo
 
-# Mesa + SUMO + real OpenStreetMap city (requires SUMO + osmnx + SUMO_HOME)
+# Mesa + SUMO + real OpenStreetMap city (requires SUMO)
 python experiments.py --all-scenarios --replications 30 \
     --simulation-type osm_city --city kuala_lumpur
+
+# ...and force a re-download of that city's OSM data first
+python experiments.py --all-scenarios --replications 30 \
+    --simulation-type osm_city --city kuala_lumpur --refresh-osm
 ```
+
+### OSM city data is downloaded once
+
+`--simulation-type osm_city` fetches the city's road network from Overpass and
+converts it with `netconvert` **once**, caching both artifacts under
+`output/sumo/<city>/` (`<city>.osm.xml` and `<city>.net.xml`). Every later
+replication, batch, or dashboard run reuses them from disk — including runs on
+a machine with no network access. For a 480-run suite that means one fetch
+instead of 480, and one `netconvert` instead of 480.
+
+To pick up edited city bounds or refreshed OpenStreetMap data, pass
+`--refresh-osm` (or tick **Re-download OSM data** on the dashboard's run form).
+It clears that city's cached files once, before the first replication; the rest
+of the batch then reuses the freshly built network. Delete
+`output/sumo/<city>/` by hand for the same effect.
 
 On Windows, use the venv Python directly:
 ```powershell
@@ -510,6 +529,7 @@ After a run, check:
 - **`output/csv/por_timeseries.csv`** — POR over time
 - **`output/figures/*.png`** — KPI comparison plots, time series, box plots
 - **`output/tables/*.csv`** — summary tables
+- **`output/sumo/<city>/`** — cached OSM data and built network, reused by every later run
 - **`output/viz/<run_id>/`** — frame recordings for the 3D viewer
 - **`output/experiments.sqlite`** — run metadata for the dashboard history
 

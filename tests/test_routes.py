@@ -1210,3 +1210,108 @@ def test_terminal_run_progress_uses_completed_runs_ratio(tmp_path, monkeypatch, 
     routes.experiment_state["status"] = "running"
     body = create_app().test_client().get("/run").get_data(as_text=True)
     assert "fill.style.width = terminalProgressPercent(state) + '%';" in body
+
+
+def test_run_form_forwards_refresh_osm_only_for_city_runs(tmp_path, monkeypatch):
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.args = args
+
+        def start(self):
+            started.append(self.args)
+
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes.threading, "Thread", FakeThread)
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {"status": "idle", "run_rows": [], "progress_log": []},
+    )
+    client = create_app().test_client()
+
+    client.post(
+        "/run",
+        data={
+            "replications": "1",
+            "simulation_type": "osm_city",
+            "city": "penang",
+            "refresh_osm": "1",
+        },
+    )
+    assert started[0] == ("", "auction", 1, "osm_city", "penang", True)
+
+    started.clear()
+    routes.experiment_state["status"] = "idle"
+    client.post(
+        "/run",
+        data={"replications": "1", "simulation_type": "mesa", "refresh_osm": "1"},
+    )
+    assert started[0] == ("", "auction", 1, "mesa", None, False)
+
+
+def test_async_run_passes_refresh_osm_to_runner_batch(tmp_path, monkeypatch):
+    result = {
+        "scenario": "low_demand",
+        "strategy": "auction",
+        "replication": 0,
+        "total_arrivals": 1,
+        "total_successful": 1,
+        "total_failed": 0,
+        "mean_pst": 1.0,
+        "std_por": 0.1,
+        "rsr": 100.0,
+        "mean_utility": 0.5,
+        "tfi": 0.0,
+        "sumo_connected": True,
+        "_timeseries": [],
+    }
+    batches = []
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_batch(self, **kwargs):
+            batches.append(kwargs)
+            kwargs["progress_callback"](1, 1, "low_demand", "auction", 0, result)
+
+        def compute_summary(self, rows):
+            return [{"scenario": "low_demand", "strategy": "auction", "n_replications": 1}]
+
+    class FakeAnalyzer:
+        def __init__(self, figures_dir, **kwargs):
+            self.figures_dir = figures_dir
+
+        def load_results(self, csv_file=None):
+            pass
+
+        def generate_all(self):
+            pass
+
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "ExperimentRunner", FakeRunner)
+    monkeypatch.setattr(
+        routes,
+        "_load_current_outputs",
+        lambda: ("global.csv", [], [], []),
+    )
+    monkeypatch.setattr(
+        routes,
+        "experiment_state",
+        {"status": "idle", "run_rows": [], "progress_log": []},
+    )
+    import analysis
+    monkeypatch.setattr(analysis, "SimulationAnalyzer", FakeAnalyzer)
+
+    routes._run_experiment_async(
+        "low_demand", "auction", 1, simulation_type="osm_city", city="penang", refresh_osm=True
+    )
+    routes._run_experiment_async(
+        "low_demand", "auction", 1, simulation_type="mesa", refresh_osm=True
+    )
+
+    assert [batch["refresh_osm"] for batch in batches] == [True, False]
+    assert [batch["city"] for batch in batches] == ["penang", None]
