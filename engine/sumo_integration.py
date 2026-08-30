@@ -109,13 +109,30 @@ def _kill_stale_sumo(port):
         pass
 
 
+def _path_entry_key(entry):
+    """Normalize a PATH entry so equivalent spellings compare equal."""
+    return os.path.normcase(entry).rstrip(os.sep)
+
+
+def _path_has_entry(path_value, entry):
+    """Whether PATH already contains this directory, ignoring case and slashes."""
+    wanted = _path_entry_key(entry)
+    return any(_path_entry_key(part) == wanted
+               for part in path_value.split(os.pathsep) if part)
+
+
 def _sumo_bin(name):
     """Return full path to a SUMO binary, ensuring env is set."""
     sumo_home = os.environ.get("SUMO_HOME") or _default_sumo_home()
     bin_dir = os.path.join(sumo_home, "bin")
-    # Make sure subprocesses can find SUMO tools
+    # Make sure subprocesses can find SUMO tools. This has to be idempotent:
+    # every replication resolves binaries, so prepending unconditionally grows
+    # PATH until it passes Windows' 32767-character environment limit, at which
+    # point netconvert and sumo fail to launch at all.
     os.environ["SUMO_HOME"] = sumo_home
-    os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+    path = os.environ.get("PATH", "")
+    if not _path_has_entry(path, bin_dir):
+        os.environ["PATH"] = bin_dir + os.pathsep + path
     _ensure_proj_lib()
     # On Windows the binaries end in .exe. If caller asked for "sumo" and
     # the unprefixed file is missing, fall back to the .exe variant.

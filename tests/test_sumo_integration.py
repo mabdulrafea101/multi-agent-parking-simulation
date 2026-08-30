@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from engine.sumo_integration import SUMOIntegration, _sumo_bin, clear_city_cache
+from engine.sumo_integration import (
+    SUMOIntegration,
+    _path_entry_key,
+    _path_has_entry,
+    _sumo_bin,
+    clear_city_cache,
+)
 from model import ParkingModel
 from tests.test_model import small_config
 
@@ -613,6 +619,54 @@ def test_spawn_edge_spread_is_reported_after_a_sumo_run(capsys):
     assert "spawn mapping used 2 distinct edges across 2 mapped cells" in (
         capsys.readouterr().out
     )
+
+
+def test_path_has_entry_matches_spelling_variants():
+    entry = os.path.join("C:", "SUMO", "bin")
+
+    assert _path_has_entry(os.pathsep.join([entry, "C:\\Other"]), entry) is True
+    assert _path_has_entry(os.pathsep.join([entry + os.sep, "C:\\Other"]), entry) is True
+    assert _path_has_entry("C:\\Other", entry) is False
+    assert _path_has_entry("", entry) is False
+
+
+def test_path_entry_key_ignores_trailing_separators_and_matches_os_case_rules():
+    entry = os.path.join("C:", "SUMO", "bin")
+
+    assert _path_entry_key(entry) == _path_entry_key(entry + os.sep)
+    if os.path.normcase("A") == "a":
+        # Windows PATH lookup is case-insensitive, so a differently-cased
+        # existing entry must not be treated as missing and re-added.
+        assert _path_entry_key(entry) == _path_entry_key(entry.upper())
+
+
+def test_sumo_bin_adds_its_directory_only_once(monkeypatch, tmp_path):
+    """Unbounded PATH growth breaks every subprocess once PATH hits 32767 chars."""
+    home = tmp_path / "sumo_home"
+    bin_dir = os.path.join(str(home), "bin")
+    other = str(tmp_path / "other")
+    monkeypatch.setenv("SUMO_HOME", str(home))
+    monkeypatch.setenv("PATH", other)
+
+    for _ in range(200):
+        _sumo_bin("sumo")
+
+    entries = os.environ["PATH"].split(os.pathsep)
+    matched = [e for e in entries if _path_entry_key(e) == _path_entry_key(bin_dir)]
+    assert matched == [entries[0]]
+    assert entries[-1] == other
+
+
+def test_sumo_bin_leaves_path_untouched_when_already_present(monkeypatch, tmp_path):
+    home = tmp_path / "sumo_home"
+    bin_dir = os.path.join(str(home), "bin")
+    existing = bin_dir + os.pathsep + str(tmp_path / "other")
+    monkeypatch.setenv("SUMO_HOME", str(home))
+    monkeypatch.setenv("PATH", existing)
+
+    _sumo_bin("sumo")
+
+    assert os.environ["PATH"] == existing
 
 
 CACHED_CITY_NET = os.path.join("output", "sumo", "kuala_lumpur", "kuala_lumpur.net.xml")
