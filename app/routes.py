@@ -18,12 +18,12 @@ from flask import (
     request,
     url_for,
 )
-from experiments import ExperimentRunner, SCENARIO_ORDER, STRATEGY_ORDER
+from experiments import ExperimentRunner, RESULT_COLUMNS, SCENARIO_ORDER, STRATEGY_ORDER
 
 RESULTS_TOOLTIPS = {
     "scenario": "Scenario | The traffic demand level used in this experiment. Higher demand means more drivers arrive in the same simulation window.",
     "strategy": "Strategy | The parking allocation policy. auction=bidding-based allocation, fcfs=first-come-first-served, random=random spot assignment, greedy=nearest available spot.",
-    "replication_id": "Replication | Independent run index for the same scenario-strategy combination. Multiple replications reduce statistical noise.",
+    "replication": "Replication | Independent run index for the same scenario-strategy combination. Multiple replications reduce statistical noise.",
     "mean_pst": "Mean Parking Search Time (PST) | Average number of simulation ticks a driver spends searching before parking. Lower is better; high PST indicates congestion or scarcity.",
     "std_pst": "STD Parking Search Time (PST) | Standard deviation of searching time across drivers in one replication. Higher values mean inconsistent search experiences.",
     "mean_por": "Mean Parking Occupancy Rate (POR) | Average share of parking spots in use after warmup. Closer to 1.0 means fuller utilisation; very high POR can mean scarcity.",
@@ -31,7 +31,9 @@ RESULTS_TOOLTIPS = {
     "mean_utility": "Mean Driver Utility | Average satisfaction score per parked driver, combining monetary cost and proximity to destination.",
     "tfi": "Traffic Flow Impact (TFI) | Sum of all parking search durations divided by total arrivals. Lower TFI means less accumulated congestion from cruising for parking.",
     "sumo_connected": "SUMO Connected | True when the traffic microsimulation backend (SUMO/TraCI) was active for this run. False means the run fell back to the abstract Mesa-only model.",
-    "sumo_vehicles_completed": "SUMO Vehicles Completed | Number of vehicles that completed their route and exited the SUMO traffic network during this run.",
+    "sumo_vehicles_completed": "SUMO Vehicles Completed | Vehicles that completed their route and exited the SUMO traffic network during this run. A shortfall against Total Arrivals has several causes - routes still in progress when the run ends, and departures SUMO rejected outright - so use SUMO Spawn Edges to judge how well the network was actually reached.",
+    "sumo_spawn_edges": "SUMO Spawn Edges | Distinct network edges that actually received a departing vehicle during this run. A city network should show hundreds; a single-digit value means the simulation grid was mapped onto a small fragment of the network.",
+    "min_sumo_spawn_edges": "Min SUMO Spawn Edges | Lowest distinct spawn-edge count across the SUMO-connected replications in this group. A low minimum flags a group whose grid-to-network mapping collapsed.",
     "n_replications": "N Replications | Number of independent simulation repetitions aggregated for this summary row.",
     "sumo_connected_runs": "SUMO Connected Runs | Count of replications in this group where SUMO/TraCI was active.",
     "mean_total_arrivals": "Mean Total Arrivals | Average number of driver arrivals recorded before the end of the simulation.",
@@ -405,31 +407,12 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
         os.makedirs(run_output_dir, exist_ok=True)
         run_results_csv = os.path.join(run_output_dir, "experiment_results.csv")
         with open(run_results_csv, "w", newline="") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=[
-                    "scenario",
-                    "strategy",
-                    "replication",
-                    "total_arrivals",
-                    "total_successful",
-                    "total_failed",
-                    "mean_pst",
-                    "std_por",
-                    "rsr",
-                    "mean_utility",
-                    "tfi",
-                    "sumo_connected",
-                ],
-            )
+            writer = csv.DictWriter(f, fieldnames=RESULT_COLUMNS)
             writer.writeheader()
             for row in run_rows:
-                # Only write fields that are in fieldnames, exclude _timeseries
-                filtered_row = {key: row.get(key, "") for key in [
-                    "scenario", "strategy", "replication", "total_arrivals", "total_successful",
-                    "total_failed", "mean_pst", "std_por", "rsr", "mean_utility", "tfi", "sumo_connected",
-                ]}
-                writer.writerow(filtered_row)
+                # RESULT_COLUMNS is the single source of truth, so a field the
+                # runner produces can never be dropped from the dashboard CSV.
+                writer.writerow({key: row.get(key, "") for key in RESULT_COLUMNS})
 
         por_rows = [
             timeseries_row

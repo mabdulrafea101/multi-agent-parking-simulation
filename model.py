@@ -416,6 +416,12 @@ class ParkingModel(mesa.Model):
             "tfi": sum(self.all_pst) / self.total_arrivals if self.total_arrivals > 0 else 0,
             "sumo_connected": self.use_sumo,
             "sumo_vehicles_completed": self.sumo_vehicles_completed,
+            # How much of the network the spawn mapping actually reached: a city
+            # run landing on a couple of edges means the grid was mapped onto a
+            # fragment of the network.
+            "sumo_spawn_edges": len({
+                edge_id for edge_id in self._edge_by_pos.values() if edge_id
+            }),
         }
         
         return results

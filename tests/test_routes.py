@@ -1212,6 +1212,56 @@ def test_terminal_run_progress_uses_completed_runs_ratio(tmp_path, monkeypatch, 
     assert "fill.style.width = terminalProgressPercent(state) + '%';" in body
 
 
+def test_run_csv_writes_exactly_the_result_columns(tmp_path, monkeypatch):
+    from experiments import RESULT_COLUMNS
+
+    row = {key: 1 for key in RESULT_COLUMNS}
+    row.update({"scenario": "low_demand", "strategy": "auction", "_timeseries": []})
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_batch(self, **kwargs):
+            kwargs["progress_callback"](1, 1, "low_demand", "auction", 0, dict(row))
+
+        def compute_summary(self, rows):
+            return []
+
+    class FakeAnalyzer:
+        def __init__(self, figures_dir, **kwargs):
+            pass
+
+        def load_results(self, csv_file=None):
+            pass
+
+        def generate_all(self):
+            pass
+
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "ExperimentRunner", FakeRunner)
+    monkeypatch.setattr(routes, "_load_current_outputs", lambda: ("global.csv", [], [], []))
+    monkeypatch.setattr(
+        routes, "experiment_state", {"status": "idle", "run_rows": [], "progress_log": []}
+    )
+    import analysis
+    monkeypatch.setattr(analysis, "SimulationAnalyzer", FakeAnalyzer)
+
+    routes._run_experiment_async("low_demand", "auction", 1)
+
+    written = (tmp_path / "output" / "run_1" / "experiment_results.csv").read_text()
+    header = written.splitlines()[0].split(",")
+    assert header == RESULT_COLUMNS
+
+
+def test_every_result_column_has_a_tooltip():
+    from experiments import RESULT_COLUMNS
+
+    missing = [key for key in RESULT_COLUMNS if key not in routes.RESULTS_TOOLTIPS]
+    assert missing == []
+
+
 def test_run_form_forwards_refresh_osm_only_for_city_runs(tmp_path, monkeypatch):
     started = []
 

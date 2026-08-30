@@ -118,6 +118,63 @@ def test_city_network_is_prepared_once_before_any_replication(tmp_path, monkeypa
     ]
 
 
+def test_run_single_row_carries_sumo_instrumentation_columns():
+    from experiments import RESULT_COLUMNS
+
+    runner = ExperimentRunner.__new__(ExperimentRunner)
+    runner.base_config = {
+        "grid": {"width": 20, "height": 20, "cell_size_meters": 10},
+        "parking": {"num_spots": 20, "num_zones": 4, "price_range": [1, 10]},
+        "demand": {
+            "arrival_rate_lambda": 2,
+            "parking_duration_mean_ticks": 8,
+            "parking_duration_std_ticks": 2,
+            "search_radius_cells": 30,
+            "max_search_duration_ticks": 6,
+        },
+        "simulation": {"total_ticks": 5, "warmup_ticks": 1, "random_seed": 42},
+        "strategy": "auction",
+    }
+    runner.scenarios_config = {"scenarios": {"low_demand": {"arrival_rate_lambda": 2}}}
+    runner.base_seed = 42
+
+    row = runner.run_single("low_demand", "auction", 0)
+
+    assert set(RESULT_COLUMNS) <= set(row), set(RESULT_COLUMNS) - set(row)
+    assert row["sumo_spawn_edges"] == 0
+    assert row["sumo_vehicles_completed"] == 0
+
+
+def test_summary_min_spawn_edges_ignores_mesa_only_runs():
+    runner = ExperimentRunner.__new__(ExperimentRunner)
+
+    def row(connected, spawn_edges):
+        return {
+            "scenario": "low_demand",
+            "strategy": "auction",
+            "replication": 0,
+            "total_arrivals": 10,
+            "total_successful": 10,
+            "total_failed": 0,
+            "mean_pst": 1.0,
+            "std_por": 0.1,
+            "rsr": 100.0,
+            "mean_utility": 1.0,
+            "tfi": 0.1,
+            "sumo_connected": connected,
+            "sumo_vehicles_completed": 5 if connected else 0,
+            "sumo_spawn_edges": spawn_edges,
+        }
+
+    summary = runner.compute_summary([row(True, 240), row(True, 239), row(False, 0)])[0]
+
+    assert summary["min_sumo_spawn_edges"] == 239
+    assert summary["sumo_connected_runs"] == 2
+    # Instrumentation must not leak into aggregate KPI statistics.
+    assert "mean_sumo_spawn_edges" not in summary
+    assert "mean_sumo_vehicles_completed" not in summary
+
+
 def test_batch_aborts_when_city_network_cannot_be_prepared(tmp_path, monkeypatch):
     def refuse(city, **kwargs):
         raise RuntimeError(f"Could not prepare the SUMO network for '{city}'")

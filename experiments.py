@@ -27,6 +27,8 @@ RESULT_COLUMNS = [
     "mean_utility",
     "tfi",
     "sumo_connected",
+    "sumo_vehicles_completed",
+    "sumo_spawn_edges",
 ]
 
 SCENARIO_ORDER = ["low_demand", "medium_demand", "high_demand", "peak_demand"]
@@ -197,6 +199,8 @@ class ExperimentRunner:
                             "mean_utility": 0.0,
                             "tfi": 0.0,
                             "sumo_connected": False,
+                            "sumo_vehicles_completed": 0,
+                            "sumo_spawn_edges": 0,
                             "_error": str(exc),
                             "_timeseries": [],
                         }
@@ -303,6 +307,8 @@ class ExperimentRunner:
             "mean_utility": results.get("mean_utility", 0.0),
             "tfi": results.get("tfi", 0.0),
             "sumo_connected": bool(results.get("sumo_connected", False)),
+            "sumo_vehicles_completed": int(results.get("sumo_vehicles_completed", 0)),
+            "sumo_spawn_edges": int(results.get("sumo_spawn_edges", 0)),
             "_timeseries": [
                 {
                     "scenario": scenario_name,
@@ -376,6 +382,13 @@ class ExperimentRunner:
                     "strategy": strategy,
                     "n_replications": len(rows),
                     "sumo_connected_runs": sum(1 for r in rows if r["sumo_connected"]),
+                    # Lowest distinct-spawn-edge count among SUMO-connected runs:
+                    # a single-digit value here means vehicles were funnelled onto a
+                    # handful of edges, i.e. the grid-to-network mapping collapsed.
+                    "min_sumo_spawn_edges": min(
+                        (int(r.get("sumo_spawn_edges", 0)) for r in rows if r["sumo_connected"]),
+                        default=0,
+                    ),
                 }
                 for metric in metric_columns:
                     values = np.array([float(r[metric]) for r in rows], dtype=float)
