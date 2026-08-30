@@ -776,13 +776,15 @@ def history_delete(run_id):
         return "Not found", 404
 
     output_path = os.path.join(SIMULATION_DIR, "output")
+    output_dir = os.path.realpath(output_path)
     literal_run_dir = os.path.join(output_path, f"run_{run_id}")
-    if not os.path.isdir(literal_run_dir) or os.path.islink(literal_run_dir):
+    expected_run_dir = os.path.join(output_dir, f"run_{run_id}")
+    # Reject any directory link here: os.path.islink() misses Windows junctions,
+    # and rmtree would then follow the link into an unrelated tree.
+    if not os.path.isdir(literal_run_dir) or os.path.realpath(literal_run_dir) != expected_run_dir:
         conn.close()
         return "Not found", 404
 
-    output_dir = os.path.realpath(output_path)
-    expected_run_dir = os.path.realpath(os.path.join(output_dir, f"run_{run_id}"))
     results_path = os.path.realpath(row["results_path"])
     run_dir = os.path.realpath(os.path.dirname(row["results_path"]))
     try:

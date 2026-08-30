@@ -996,6 +996,22 @@ def test_history_delete_rejects_noncanonical_run_directory(tmp_path, monkeypatch
     conn.close()
 
 
+def _make_directory_link(link, target):
+    """Point `link` at directory `target`; fall back to a junction where creating
+    a symlink needs elevation (Windows without Developer Mode). Returns the kind
+    of link created, since junctions are not reported by is_symlink()."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return "symlink"
+    except (OSError, NotImplementedError):
+        if os.name != "nt":
+            raise
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+        return "junction"
+
+
 def test_history_delete_rejects_symlinked_run_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
     monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
@@ -1004,7 +1020,7 @@ def test_history_delete_rejects_symlinked_run_directory(tmp_path, monkeypatch):
     run_path = output_dir / "run_12"
     target_dir.mkdir(parents=True)
     (target_dir / "experiment_results.csv").write_text("scenario\ntarget\n")
-    run_path.symlink_to(target_dir, target_is_directory=True)
+    link_kind = _make_directory_link(run_path, target_dir)
 
     conn = routes._get_db()
     conn.execute(
@@ -1017,7 +1033,9 @@ def test_history_delete_rejects_symlinked_run_directory(tmp_path, monkeypatch):
     response = create_app().test_client().post("/history/run/12/delete")
 
     assert response.status_code == 404
-    assert run_path.is_symlink()
+    assert run_path.exists()
+    if link_kind == "symlink":
+        assert run_path.is_symlink()
     assert (target_dir / "experiment_results.csv").read_text() == "scenario\ntarget\n"
     conn = routes._get_db()
     assert conn.execute("SELECT 1 FROM experiments WHERE id=12").fetchone()
