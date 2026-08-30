@@ -25,6 +25,10 @@ def test_refresh_osm_clears_city_cache_once_per_batch(tmp_path, monkeypatch):
         "engine.sumo_integration.clear_city_cache",
         lambda city, **kwargs: cleared.append(city),
     )
+    monkeypatch.setattr(
+        "engine.sumo_integration.ensure_city_network",
+        lambda city, **kwargs: str(tmp_path / f"{city}.net.xml"),
+    )
 
     runner = ExperimentRunner.__new__(ExperimentRunner)
     runner.scenarios_config = {
@@ -66,6 +70,73 @@ def test_refresh_osm_clears_city_cache_once_per_batch(tmp_path, monkeypatch):
     assert cleared == ["penang"]
     assert len(single_run_kwargs) == 4
     assert all("refresh_osm" not in kwargs for kwargs in single_run_kwargs)
+    assert all(kwargs["net_file"].endswith("penang.net.xml") for kwargs in single_run_kwargs)
+
+
+def test_city_network_is_prepared_once_before_any_replication(tmp_path, monkeypatch):
+    events = []
+
+    monkeypatch.setattr(
+        "engine.sumo_integration.ensure_city_network",
+        lambda city, **kwargs: events.append(("prepare", city)) or "penang.net.xml",
+    )
+
+    runner = ExperimentRunner.__new__(ExperimentRunner)
+    runner.scenarios_config = {
+        "scenarios": {"low_demand": {}},
+        "strategies": {"auction": {}},
+    }
+    runner.results_dir = str(tmp_path)
+    runner.save_summary = lambda results: None
+
+    def fake_run_single(scenario, strategy, rep, **kwargs):
+        events.append(("run", rep))
+        return {
+            "scenario": scenario,
+            "strategy": strategy,
+            "replication": rep,
+            "total_arrivals": 0,
+            "total_successful": 0,
+            "total_failed": 0,
+            "mean_pst": 0.0,
+            "std_por": 0.0,
+            "rsr": 0.0,
+            "mean_utility": 0.0,
+            "tfi": 0.0,
+            "sumo_connected": False,
+            "_timeseries": [],
+        }
+
+    runner.run_single = fake_run_single
+    runner.run_batch(replication_end=3, simulation_type="osm_city", city="penang")
+
+    assert events == [
+        ("prepare", "penang"),
+        ("run", 0),
+        ("run", 1),
+        ("run", 2),
+    ]
+
+
+def test_batch_aborts_when_city_network_cannot_be_prepared(tmp_path, monkeypatch):
+    def refuse(city, **kwargs):
+        raise RuntimeError(f"Could not prepare the SUMO network for '{city}'")
+
+    monkeypatch.setattr("engine.sumo_integration.ensure_city_network", refuse)
+
+    runner = ExperimentRunner.__new__(ExperimentRunner)
+    runner.scenarios_config = {
+        "scenarios": {"low_demand": {}},
+        "strategies": {"auction": {}},
+    }
+    runner.results_dir = str(tmp_path)
+    ran = []
+    runner.run_single = lambda *args, **kwargs: ran.append(args)
+
+    with pytest.raises(RuntimeError, match="Could not prepare"):
+        runner.run_batch(replication_end=3, simulation_type="osm_city", city="penang")
+
+    assert ran == []
 
 
 def test_batch_keeps_city_cache_when_refresh_not_requested(tmp_path, monkeypatch):
@@ -73,6 +144,10 @@ def test_batch_keeps_city_cache_when_refresh_not_requested(tmp_path, monkeypatch
     monkeypatch.setattr(
         "engine.sumo_integration.clear_city_cache",
         lambda city, **kwargs: cleared.append(city),
+    )
+    monkeypatch.setattr(
+        "engine.sumo_integration.ensure_city_network",
+        lambda city, **kwargs: "penang.net.xml",
     )
 
     runner = ExperimentRunner.__new__(ExperimentRunner)

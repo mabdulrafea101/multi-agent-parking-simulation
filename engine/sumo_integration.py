@@ -2,9 +2,11 @@
 SUMO Integration Module for Parking Simulation.
 Uses TraCI (Traffic Control Interface) to connect Mesa agents with SUMO traffic simulation.
 """
+import glob
 import os
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 try:
@@ -27,19 +29,32 @@ SUMO_HOME_CANDIDATES = [
 ]
 
 
+def _wheel_site_packages(project_root):
+    """Candidate site-packages dirs for a venv on any platform.
+
+    Windows lays a venv out as venv/Lib/site-packages; POSIX as
+    venv/lib/pythonX.Y/site-packages, so the version has to be globbed.
+    """
+    candidates = [os.path.join(project_root, "venv", "Lib", "site-packages")]
+    candidates += sorted(
+        glob.glob(os.path.join(project_root, "venv", "lib", "python*", "site-packages"))
+    )
+    return candidates
+
+
 def _default_sumo_home():
     # First, check the venv-relative pip install location (eclipse-sumo wheel).
-    # The wheel puts binaries in .../venv/Lib/site-packages/sumo/bin and
-    # data in .../venv/Lib/site-packages/sumo_data; SUMO_HOME should point
-    # to the directory containing bin/ (i.e. .../site-packages/sumo).
+    # The wheel puts binaries in .../site-packages/sumo/bin and data in
+    # .../site-packages/sumo_data; SUMO_HOME should point to the directory
+    # containing bin/ (i.e. .../site-packages/sumo).
     is_windows = sys.platform.startswith("win")
     exe_suffix = ".exe" if is_windows else ""
     try:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        venv_lib = os.path.join(project_root, "venv", "Lib", "site-packages")
-        wheel = os.path.join(venv_lib, "sumo", "bin", f"sumo{exe_suffix}")
-        if os.path.isfile(wheel):
-            return os.path.dirname(os.path.dirname(wheel))  # .../site-packages/sumo
+        for site_packages in _wheel_site_packages(project_root):
+            wheel = os.path.join(site_packages, "sumo", "bin", f"sumo{exe_suffix}")
+            if os.path.isfile(wheel):
+                return os.path.dirname(os.path.dirname(wheel))  # .../site-packages/sumo
     except Exception:
         pass
     for p in SUMO_HOME_CANDIDATES:
@@ -125,13 +140,61 @@ def _ensure_proj_lib():
         pass
 
 
+_NET_CACHE = {}
+
+
+def _read_net(net_file):
+    """Parse a SUMO network, reusing the parsed object while the file is unchanged.
+
+    A city network is large enough that re-reading it for every replication costs
+    seconds each time (the 480-run suite would spend the bulk of an hour parsing),
+    and the file is static for the life of a batch.
+    """
+    key = os.path.abspath(net_file)
+    mtime = os.path.getmtime(key)
+    cached = _NET_CACHE.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    network = sumolib.net.readNet(key)
+    _NET_CACHE[key] = (mtime, network)
+    return network
+
+
 class SUMOIntegration:
-    """Manages SUMO simulation and connection to Mesa model via TraCI."""
+    """Manages SUMO simulation and connection to Mesa agents via TraCI."""
 
     def __init__(self, config):
         self.config = config
         self.connected = False
         self.network = None
+        self._drivable_cache = None
+
+    def load_network(self, net_file):
+        """Attach a previously built network file without rebuilding it."""
+        self.network = _read_net(net_file)
+        return self.network
+
+    def drivable_edges(self):
+        """Edges that may actually carry a car, cached per network.
+
+        OSM networks are mostly not drivable - a Kuala Lumpur model network has
+        ~30k edges of which a quarter take passenger vehicles - so picking the
+        nearest edge without filtering hands SUMO footways and steps, which
+        rejects the departure.
+        """
+        if self.network is None:
+            return []
+        if self._drivable_cache is None or self._drivable_cache[0] is not self.network:
+            self._drivable_cache = (
+                self.network,
+                [
+                    edge
+                    for edge in self.network.getEdges()
+                    if edge.getLaneNumber() > 0 and edge.allows("passenger")
+                ],
+            )
+        return self._drivable_cache[1]
+
 
     def setup_network_from_osm(self, osm_file, output_dir="output/sumo"):
         """Convert OpenStreetMap data to SUMO network via netconvert."""
@@ -152,7 +215,7 @@ class SUMOIntegration:
         ]
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
-            self.network = sumolib.net.readNet(net_file)
+            self.network = _read_net(net_file)
             return net_file
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"  SUMO: netconvert failed ({e})")
@@ -188,7 +251,7 @@ class SUMOIntegration:
 
         if os.path.exists(net_file):
             try:
-                self.network = sumolib.net.readNet(net_file)
+                self.network = _read_net(net_file)
             except Exception:
                 self.network = None
             return net_file
@@ -409,7 +472,7 @@ class OSMCityIntegration(SUMOIntegration):
         net_file = os.path.join(cache_dir, f"{city_name}.net.xml")
         if os.path.exists(net_file) and os.path.getmtime(net_file) >= os.path.getmtime(osm_file):
             try:
-                self.network = sumolib.net.readNet(net_file)
+                self.network = _read_net(net_file)
             except Exception:
                 self.network = None
             print(f"  SUMO: using cached network at {net_file}")
@@ -430,7 +493,7 @@ class OSMCityIntegration(SUMOIntegration):
         ]
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
-            self.network = sumolib.net.readNet(net_file)
+            self.network = _read_net(net_file)
             print(f"  SUMO: built network once at {net_file}")
             return net_file
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
@@ -479,10 +542,44 @@ class OSMCityIntegration(SUMOIntegration):
             return None
         try:
             x, y = self.network.convertLonLat2XY(lon, lat)
-            edge, _ = self.network.getNeighboringEdges(x, y, r=100)[0]
-            return edge.getID()
         except Exception:
             return None
+        best_edge, best_dist = None, float("inf")
+        for edge in self.drivable_edges():
+            for (sx, sy) in edge.getShape():
+                d = (sx - x) ** 2 + (sy - y) ** 2
+                if d < best_dist:
+                    best_dist, best_edge = d, edge
+        return best_edge.getID() if best_edge else None
+
+
+def ensure_city_network(city_name, output_dir="output/sumo", attempts=3):
+    """Build a city's network once, before any replication is launched.
+
+    Running this ahead of a batch means every replication uses the same road
+    network, no replication pays for the download inside its own timing, and a
+    failed fetch aborts the batch loudly instead of quietly mixing synthetic-grid
+    replications in with city ones.
+    """
+    integration = OSMCityIntegration(city_name=city_name)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            net_file = integration.prepare_city_network(city_name, output_dir=output_dir)
+        except Exception as exc:
+            net_file, last_error = None, exc
+        if net_file:
+            return net_file
+        if attempt < attempts:
+            delay = 5 * attempt
+            detail = f" ({last_error})" if last_error else ""
+            print(f"  OSM: could not prepare '{city_name}' on attempt "
+                  f"{attempt}/{attempts}{detail}, retrying in {delay}s")
+            time.sleep(delay)
+    raise RuntimeError(
+        f"Could not prepare the SUMO network for '{city_name}' after {attempts} attempts"
+        + (f" (last error: {last_error})" if last_error else "")
+    )
 
 
 class OSMIntegration:

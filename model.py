@@ -77,6 +77,7 @@ class ParkingModel(mesa.Model):
         self.use_sumo = False
         self.sumo_vehicles_completed = 0
         self._sumo_port = 8813 + (replication_id % 100)
+        self._edge_by_pos = {}
         self.kpi_data = {
             "tick": [], "searching_drivers": [], "occupied_spots": [],
             "total_drivers": [], "successful_allocations": [], "failed_allocations": [],
@@ -130,8 +131,13 @@ class ParkingModel(mesa.Model):
         except ValueError:
             return None
 
-    def init_sumo(self, gui=False, osm_place=None):
-        """Initialize SUMO/TraCI integration. Falls back to Mesa-only mode on failure."""
+    def init_sumo(self, gui=False, osm_place=None, net_file=None):
+        """Initialize SUMO/TraCI integration. Falls back to Mesa-only mode on failure.
+
+        Pass net_file to reuse a network built earlier by the batch: the model then
+        uses that file as-is and never downloads or rebuilds anything itself, which
+        keeps every replication in a batch on the same road network.
+        """
         if self.use_sumo:
             return
 
@@ -146,10 +152,12 @@ class ParkingModel(mesa.Model):
             )
 
             if use_city_network:
-                net_file = self.sumo.prepare_city_network(city_config["name"])
-                if net_file:
-                    self._sumo_net_file = net_file
-                    print(f"  SUMO: Using city network at {net_file}")
+                prepared = net_file or self.sumo.prepare_city_network(city_config["name"])
+                if prepared:
+                    self._sumo_net_file = prepared
+                    if net_file:
+                        self.sumo.load_network(prepared)
+                    print(f"  SUMO: Using city network at {prepared}")
                 else:
                     print("  SUMO: City network unavailable, using synthetic network")
                     self._sumo_net_file = self.sumo.create_synthetic_network()
@@ -199,10 +207,12 @@ class ParkingModel(mesa.Model):
             self.use_sumo = False
 
     def _pos_to_edge_id(self, pos):
-        """Map a grid position (x, y) to the nearest SUMO edge.
+        """Map a grid position (x, y) to the nearest SUMO edge that takes cars.
         The SUMO network is smaller than the simulation grid, so scale coords."""
         if self.sumo is None or self.sumo.network is None:
             return None
+        if pos in self._edge_by_pos:
+            return self._edge_by_pos[pos]
         cell_size = self.config.get("grid", {}).get("cell_size_meters", 10)
         # Network is 20x20 regardless of simulation grid size
         # Scale simulation grid coords to network coords
@@ -211,14 +221,18 @@ class ParkingModel(mesa.Model):
         px, py = float(pos[0]) * cell_size * scale, float(pos[1]) * cell_size * scale
         best_edge = None
         best_dist = float("inf")
-        for edge in self.sumo.network.getEdges():
+        # Restricting to car-legal edges is what keeps SUMO from rejecting the
+        # departure: most OSM edges are footways, steps or pedestrian shortcuts.
+        for edge in self.sumo.drivable_edges():
             shape = edge.getShape()
             for (sx, sy) in shape:
                 d = (sx - px) ** 2 + (sy - py) ** 2
                 if d < best_dist:
                     best_dist = d
                     best_edge = edge
-        return best_edge.getID() if best_edge else None
+        edge_id = best_edge.getID() if best_edge else None
+        self._edge_by_pos[pos] = edge_id
+        return edge_id
 
     def step(self):
         """Execute one simulation tick."""

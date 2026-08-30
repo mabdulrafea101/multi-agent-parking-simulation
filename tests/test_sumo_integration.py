@@ -331,3 +331,190 @@ def test_osm_download_uses_simplify_false(monkeypatch):
 
     assert called_with["place_name"] == "test_place"
     assert called_with["kwargs"].get("simplify") is False
+
+
+class FakeEdge:
+    def __init__(self, edge_id, shape=(), lanes=1, passenger=True):
+        self.edge_id = edge_id
+        self.shape = list(shape)
+        self.lanes = lanes
+        self.passenger = passenger
+
+    def getID(self):
+        return self.edge_id
+
+    def getShape(self):
+        return self.shape
+
+    def getLaneNumber(self):
+        return self.lanes
+
+    def allows(self, vehicle_class):
+        return self.passenger and vehicle_class == "passenger"
+
+
+class FakeNetwork:
+    def __init__(self, edges):
+        self.edges = list(edges)
+
+    def getEdges(self):
+        return self.edges
+
+
+def test_drivable_edges_keeps_only_car_legal_edges():
+    integration = SUMOIntegration({})
+    integration.network = FakeNetwork([
+        FakeEdge("road", lanes=1, passenger=True),
+        FakeEdge("footway", lanes=1, passenger=False),
+        FakeEdge("no_lane", lanes=0, passenger=True),
+    ])
+
+    assert [edge.getID() for edge in integration.drivable_edges()] == ["road"]
+
+
+def test_drivable_edges_is_cached_per_network():
+    calls = []
+
+    class CountingNetwork(FakeNetwork):
+        def getEdges(self):
+            calls.append(1)
+            return self.edges
+
+    integration = SUMOIntegration({})
+    integration.network = CountingNetwork([FakeEdge("road")])
+
+    integration.drivable_edges()
+    integration.drivable_edges()
+
+    assert len(calls) == 1
+
+
+def test_pos_to_edge_id_prefers_car_legal_edge_over_nearer_footway():
+    footway = FakeEdge("footway", shape=[(1, 1)], passenger=False)
+    road = FakeEdge("road", shape=[(9, 9)])
+    integration = SUMOIntegration({})
+    integration.network = FakeNetwork([footway, road])
+
+    model = ParkingModel(config_dict=small_config(arrival_rate=0), strategy="auction")
+    model.sumo = integration
+    model.use_sumo = True
+
+    assert model._pos_to_edge_id((1, 1)) == "road"
+    assert model._edge_by_pos[(1, 1)] == "road"
+
+
+def test_nearest_edge_id_ignores_pedestrian_edges():
+    from engine.sumo_integration import OSMCityIntegration
+
+    class LonLatNetwork(FakeNetwork):
+        def convertLonLat2XY(self, lon, lat):
+            return lon, lat
+
+    integration = OSMCityIntegration(city_name="penang")
+    integration.network = LonLatNetwork([
+        FakeEdge("footway", shape=[(0.1, 0.1)], passenger=False),
+        FakeEdge("road", shape=[(0.9, 0.9)]),
+    ])
+
+    assert integration._nearest_edge_id(0.0, 0.0) == "road"
+
+
+def test_network_file_is_parsed_once_across_replications(monkeypatch, tmp_path):
+    reads = []
+
+    class CountingNet:
+        @staticmethod
+        def readNet(path):
+            reads.append(path)
+            return {"path": path}
+
+    net_file = tmp_path / "city.net.xml"
+    net_file.write_text("<net></net>")
+    monkeypatch.setattr("engine.sumo_integration.sumolib.net", CountingNet)
+
+    first = SUMOIntegration({})
+    second = SUMOIntegration({})
+    first.load_network(str(net_file))
+    second.load_network(str(net_file))
+
+    assert reads == [os.path.abspath(str(net_file))]
+    assert first.network is second.network
+
+
+def test_ensure_city_network_returns_the_prepared_file(monkeypatch):
+    from engine.sumo_integration import OSMCityIntegration, ensure_city_network
+
+    monkeypatch.setattr(
+        OSMCityIntegration,
+        "prepare_city_network",
+        lambda self, name, **kwargs: f"{name}.net.xml",
+    )
+
+    assert ensure_city_network("penang") == "penang.net.xml"
+
+
+def test_ensure_city_network_retries_then_aborts_the_batch(monkeypatch):
+    from engine.sumo_integration import OSMCityIntegration, ensure_city_network
+
+    attempts = []
+    slept = []
+
+    def fail(self, name, **kwargs):
+        attempts.append(name)
+        return None
+
+    monkeypatch.setattr(OSMCityIntegration, "prepare_city_network", fail)
+    monkeypatch.setattr("engine.sumo_integration.time.sleep", lambda seconds: slept.append(seconds))
+
+    with pytest.raises(RuntimeError, match="after 3 attempts"):
+        ensure_city_network("penang")
+
+    assert attempts == ["penang", "penang", "penang"]
+    assert slept == [5, 10]
+
+
+def test_wheel_site_packages_covers_posix_venv_layout(tmp_path):
+    from engine.sumo_integration import _wheel_site_packages
+
+    posix_packages = tmp_path / "venv" / "lib" / "python3.12" / "site-packages"
+    posix_packages.mkdir(parents=True)
+
+    candidates = _wheel_site_packages(str(tmp_path))
+
+    assert os.path.join(str(posix_packages)) in candidates
+    assert os.path.join(str(tmp_path), "venv", "Lib", "site-packages") in candidates
+
+
+def test_init_sumo_with_prepared_net_file_never_fetches(monkeypatch, tmp_path):
+    city_dir = tmp_path / "output" / "sumo" / CITY
+    city_dir.mkdir(parents=True)
+    net_file = city_dir / f"{CITY}.net.xml"
+    net_file.write_text("<net></net>")
+
+    def fail_urlopen(*args, **kwargs):
+        raise AssertionError("a batch-prepared network must never be re-downloaded")
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("a batch-prepared network must never be rebuilt")
+
+    started = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("engine.sumo_integration.urllib.request.urlopen", fail_urlopen)
+    monkeypatch.setattr("engine.sumo_integration.subprocess.run", fail_run)
+    monkeypatch.setattr("engine.sumo_integration.sumolib.net", FakeNet)
+    monkeypatch.setattr(
+        SUMOIntegration,
+        "start_sumo",
+        lambda self, net, gui=False, port=8813: started.append(net) or False,
+    )
+
+    model = ParkingModel(
+        config_dict=small_config(arrival_rate=0),
+        strategy="auction",
+        simulation_type="osm_city",
+        city=CITY,
+    )
+    model.init_sumo(osm_place=model.city, net_file=str(net_file))
+
+    assert started == [str(net_file)]
+    assert model.sumo.network == {"path": os.path.abspath(str(net_file))}

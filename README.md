@@ -387,6 +387,13 @@ It clears that city's cached files once, before the first replication; the rest
 of the batch then reuses the freshly built network. Delete
 `output/sumo/<city>/` by hand for the same effect.
 
+Batch order of operations is prepare-then-run: the network is fetched,
+converted and parsed before replication 1 starts, and every replication is
+handed that same file. If the network cannot be produced the batch aborts with
+an error instead of running early replications on the synthetic grid while later
+ones use the city, which would silently mix two road networks into one result
+set.
+
 On Windows, use the venv Python directly:
 ```powershell
 venv\Scripts\python.exe main.py --strategy auction --replications 1

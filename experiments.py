@@ -81,7 +81,24 @@ class ExperimentRunner:
         if removed:
             print(f"OSM: cleared {len(removed)} cached file(s) for {city}")
         else:
-            print(f"OSM: nothing cached for {city}, will download on first replication")
+            print(f"OSM: nothing cached for {city}, will download during batch setup")
+
+    @staticmethod
+    def _prepare_city_network(city, total_runs):
+        """Build the city's SUMO network once, before the replication loop.
+
+        Doing this here rather than inside the first replication attributes the
+        download and netconvert cost to the batch instead of one run's timing,
+        guarantees every replication drives the same road network, and lets a
+        failed fetch abort the batch instead of mixing synthetic-grid
+        replications into the results.
+        """
+        from engine.sumo_integration import ensure_city_network
+
+        print(f"SUMO: preparing '{city}' network once for {total_runs} runs...")
+        net_file = ensure_city_network(city)
+        print(f"SUMO: network ready at {net_file}")
+        return net_file
 
     def run_batch(
         self,
@@ -143,6 +160,9 @@ class ExperimentRunner:
 
         total_reps = replication_end - replication_start
         total_runs = len(scenarios) * len(strategies) * total_reps
+        prepared_net = None
+        if city:
+            prepared_net = self._prepare_city_network(city, total_runs)
         completed = 0
         started_at = time.time()
         next_eta_at = started_at + 300
@@ -159,6 +179,7 @@ class ExperimentRunner:
                             rep,
                             simulation_type=simulation_type,
                             city=city,
+                            net_file=prepared_net,
                         )
                     except Exception as exc:
                         print(f"  [{scenario_name}] [{strategy_name}] rep {rep}: FAILED ({exc}), skipping")
@@ -222,6 +243,7 @@ class ExperimentRunner:
         replication_id,
         simulation_type="mesa",
         city=None,
+        net_file=None,
     ):
         """Run one scenario/strategy/replication combination."""
         config = copy.deepcopy(self.base_config)
@@ -240,12 +262,23 @@ class ExperimentRunner:
         if simulation_type != "mesa":
             # Keep experiments robust on machines without SUMO binaries or TraCI.
             from engine.sumo_integration import _sumo_bin
-            if not os.path.isfile(_sumo_bin("netgenerate")):
+            required_binary = "netconvert" if simulation_type == "osm_city" else "netgenerate"
+            missing_binary = next(
+                (name for name in ("sumo", required_binary)
+                 if not os.path.isfile(_sumo_bin(name))),
+                None,
+            )
+            if missing_binary is not None:
+                print(f"  SUMO: {missing_binary} unavailable, running in Mesa-only mode")
                 model.sumo = None
                 model.use_sumo = False
             else:
                 try:
-                    model.init_sumo(gui=False, osm_place=city if simulation_type == "osm_city" else None)
+                    model.init_sumo(
+                        gui=False,
+                        osm_place=city if simulation_type == "osm_city" else None,
+                        net_file=net_file,
+                    )
                 except Exception as exc:
                     print(f"  SUMO: Initialization failed ({exc}), running in Mesa-only mode")
                     model.sumo = None
