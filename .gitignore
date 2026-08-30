@@ -29,8 +29,7 @@ run_experiments_retry.txt
 test_write.txt
 SELECT*;
 
-# Local documentation and generated report artifacts
-docs/
+# Generated report artifacts (design specs under docs/ are tracked)
 *.docx
 *.pdf
 *.pptx
