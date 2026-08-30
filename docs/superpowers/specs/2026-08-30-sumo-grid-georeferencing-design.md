@@ -1,7 +1,9 @@
 # Georeferencing the Mesa grid onto the SUMO network
 
 Date: 2026-08-30
-Status: approved design, pending implementation plan
+Status: implemented. The spawn-edge instrumentation landed first so the defect
+was measured in the results file (2 distinct edges) before the projection fixed
+it (459), on the same seed.
 Scope: Python-side coordinate correctness only. Metrics, database schema, CSV
 columns, recorder payload and the 3D/map viewer are deliberately unchanged.
 
@@ -86,9 +88,9 @@ centres onto the exact boundary instead of cell corners onto a guessed one.
   reads positions back from SUMO (`get_vehicle_position` has zero callers).
 - Agent movement: Mesa drivers still never move, `pos` is written once at
   spawn (`agents/driver_agent.py:19`).
-- Adding `sumo_vehicles_completed` to `RESULT_COLUMNS`. It stays computed at
-  `model.py:418` and unused; the tooltip at `app/routes.py:34` remains unable to
-  fire. A follow-up spec should retire or land that field deliberately.
+- Adding new *aggregate* statistics or changing existing metric definitions. The
+  instrumentation columns described below are per-run observations only and are
+  deliberately excluded from `compute_summary.metric_columns`.
 - Placing zones at real district anchors (Bukit Bintang, KLCC). The 8 generated
   clusters stay as they are; `parking_zone_edges` remains unused by the model.
 
@@ -188,8 +190,8 @@ argued.
 
 Two additions, both stdout only:
 
-1. At the end of `init_sumo` for a city run, one line with the mapped extent and
-   edge counts:
+1. When SUMO connects, one line with the mapped extent and edge counts (any
+   network type, city or synthetic):
    `SUMO: grid 100x100 -> network extent 6138x7763 m (7615 of 30319 edges take cars)`
 2. Once per SUMO-connected replication, at the end of `run_simulation`, reporting
    what the mapping actually did during that run: the number of distinct edges
@@ -200,7 +202,34 @@ Two additions, both stdout only:
 The second line is the one that makes the current defect visible: on the KL
 network today it would print 2 distinct edges, which is self-evidently wrong for
 a city run, and nothing currently surfaces it.
-No CSV, DB or JSON payload gains a field.
+
+### Detection columns (added after review of "why nobody noticed")
+
+The console diagnostics above are still ephemeral in a 480-run batch, so the
+result schema gained two columns and the drift that hid them both was removed.
+
+| Column | What it detects | What it cannot detect |
+|---|---|---|
+| `sumo_vehicles_completed` | Rejected departures: with `ignore-route-errors="true"` SUMO silently deletes vehicles placed on pedestrian-only edges, so a shortfall shows up here. Already computed; previously emitted by nothing. | A mis-scaled mapping: a single-edge route completes wherever it is placed, so the count can look healthy while every vehicle sits in one corner. |
+| `sumo_spawn_edges` | Projection bugs: distinct edges that received a departure. A city run scoring single digits means the grid was mapped onto a fragment of the network. | Nothing about traffic quality; it is a coverage measure. |
+
+Root cause of the invisibility: three independent copies of the column list
+(`experiments.RESULT_COLUMNS` plus two hardcoded lists in `app/routes.py`) had
+drifted, so a field computed in the model and documented in the tooltip table
+was written by nothing. `RESULT_COLUMNS` is now the only list, and tests assert
+that the dashboard header equals it and that every column has a tooltip.
+
+Measured on the cached KL network, one replication, same seed, before and after
+the projection change:
+
+| Field | Before | After |
+|---|---|---|
+| `sumo_spawn_edges` | 2 | 459 |
+| `sumo_vehicles_completed` | 246 | 862 |
+| `mean_pst` / `std_por` / `rsr` / `mean_utility` / `tfi` | 1.0 / 0.08675356995536264 / 100.0 / 0.8453508745629182 / 1.0 | identical |
+
+`min_sumo_spawn_edges` joins the summary table (over SUMO-connected replications
+only), mirroring the existing `sumo_connected_runs` precedent.
 
 ## Testing plan
 
@@ -253,6 +282,5 @@ re-run requirement. Existing `output/sumo/<city>/` caches stay valid.
 - Multi-edge routes so vehicles traverse the network.
 - Geo-authored placement onto real district anchors - changes every
   distance-dependent KPI and requires regenerating the suite.
-- Deciding the fate of the inert `sumo_vehicles_completed`.
 - The grid-to-network aspect distortion, if square cells in metres ever become a
   requirement rather than an abstraction.

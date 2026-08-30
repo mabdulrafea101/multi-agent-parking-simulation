@@ -404,6 +404,21 @@ Results land under `output/csv/`, `output/figures/`, and `output/tables/`.
 The `sumo_connected` column in `output/csv/experiment_results.csv` reports
 whether SUMO was active for each run (`True` = Mesa+SUMO, `False` = Mesa-only).
 
+Two further columns describe how much of the network SUMO actually used, since
+"connected" alone can hide a collapsed mapping: `sumo_vehicles_completed`
+(vehicles that finished a route; a shortfall against `total_arrivals` has several
+causes, including routes still running when the replication ends, and departures
+SUMO rejected outright) and `sumo_spawn_edges` (how many distinct edges received
+a vehicle - hundreds on a city network, not a handful, and the direct measure of
+mapping quality). `summary_statistics.csv` reports `min_sumo_spawn_edges` per
+scenario/strategy group. Neither participates in the KPI aggregates.
+
+When SUMO connects, the run log also states the mapped extent and the share of
+edges that accept cars, e.g.
+`SUMO: grid 100x100 -> network extent 6138x7763 m (7615 of 30319 edges take cars)`,
+followed by `SUMO: spawn mapping used 459 distinct edges across 933 mapped cells`
+when the replication ends.
+
 ---
 
 ## Running the Flask dashboard

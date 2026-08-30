@@ -12,6 +12,7 @@ from recorder import FrameRecorder
 from agents.driver_agent import DriverAgent
 from agents.parking_spot_agent import ParkingSpotAgent
 from agents.coordinator_agent import CoordinatorAgent
+from engine.geometry import GridProjection
 try:
     from engine.sumo_integration import (
         SUMOIntegration,
@@ -78,6 +79,8 @@ class ParkingModel(mesa.Model):
         self.sumo_vehicles_completed = 0
         self._sumo_port = 8813 + (replication_id % 100)
         self._edge_by_pos = {}
+        self._projection = None
+        self._projection_net = None
         self.kpi_data = {
             "tick": [], "searching_drivers": [], "occupied_spots": [],
             "total_drivers": [], "successful_allocations": [], "failed_allocations": [],
@@ -196,6 +199,7 @@ class ParkingModel(mesa.Model):
                 if success:
                     self.use_sumo = True
                     print(f"  SUMO: Connected via TraCI on port {self._sumo_port}")
+                    self._describe_network_mapping()
                 else:
                     print("  SUMO: Could not start, running in Mesa-only mode")
             else:
@@ -206,19 +210,51 @@ class ParkingModel(mesa.Model):
             self.sumo = None
             self.use_sumo = False
 
+    def _projection_or_build(self):
+        """Grid-to-network projection for the currently loaded network."""
+        network = self.sumo.network if self.sumo is not None else None
+        if network is None:
+            return None
+        if network is not self._projection_net:
+            projection = GridProjection.from_net(network)
+            self._projection_net = network
+            self._projection = None if projection.degenerate else projection
+            # Cached edges were computed against the previous network's metres.
+            self._edge_by_pos.clear()
+        return self._projection
+
+    def _describe_network_mapping(self):
+        """Report how much of the network the spawn mapping can actually reach.
+
+        Purely diagnostic: a network stub or an unreadable boundary must never
+        fail a simulation run.
+        """
+        try:
+            projection = self._projection_or_build()
+            if projection is None:
+                print("  SUMO: no network extent available for spawn mapping")
+                return
+            width_m, height_m = projection.extent_m
+            total = len(self.sumo.network.getEdges())
+            drivable = len(self.sumo.drivable_edges())
+            print(f"  SUMO: grid {self.width}x{self.height} -> network extent "
+                  f"{width_m:.0f}x{height_m:.0f} m "
+                  f"({drivable} of {total} edges take cars)")
+        except Exception:
+            pass
+
     def _pos_to_edge_id(self, pos):
-        """Map a grid position (x, y) to the nearest SUMO edge that takes cars.
-        The SUMO network is smaller than the simulation grid, so scale coords."""
+        """Map a grid position (x, y) to the nearest SUMO edge that takes cars."""
         if self.sumo is None or self.sumo.network is None:
+            return None
+        # Resolved before the memo is consulted: a network change invalidates the
+        # cached cells, and a memo lookup first would keep returning stale edges.
+        projection = self._projection_or_build()
+        if projection is None:
             return None
         if pos in self._edge_by_pos:
             return self._edge_by_pos[pos]
-        cell_size = self.config.get("grid", {}).get("cell_size_meters", 10)
-        # Network is 20x20 regardless of simulation grid size
-        # Scale simulation grid coords to network coords
-        scale = 20.0 / max(self.config.get("grid", {}).get("width", 100), 
-                           self.config.get("grid", {}).get("height", 100))
-        px, py = float(pos[0]) * cell_size * scale, float(pos[1]) * cell_size * scale
+        px, py = projection.cell_to_xy(pos[0], pos[1], self.width, self.height)
         best_edge = None
         best_dist = float("inf")
         # Restricting to car-legal edges is what keeps SUMO from rejecting the
@@ -390,6 +426,10 @@ class ParkingModel(mesa.Model):
         results = self._compute_results()
         if self.recorder:
             results["frame_run_id"] = getattr(self, '_frame_run_id', None)
+        if self.use_sumo:
+            mapped = [edge for edge in self._edge_by_pos.values() if edge]
+            print(f"  SUMO: spawn mapping used {len(set(mapped))} distinct edges "
+                  f"across {len(self._edge_by_pos)} mapped cells")
         return results
 
     def _compute_results(self):

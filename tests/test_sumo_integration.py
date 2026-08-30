@@ -354,11 +354,15 @@ class FakeEdge:
 
 
 class FakeNetwork:
-    def __init__(self, edges):
+    def __init__(self, edges, boundary=(0.0, 0.0, 100.0, 100.0)):
         self.edges = list(edges)
+        self.boundary = boundary
 
     def getEdges(self):
         return self.edges
+
+    def getBoundary(self):
+        return self.boundary
 
 
 def test_drivable_edges_keeps_only_car_legal_edges():
@@ -518,3 +522,155 @@ def test_init_sumo_with_prepared_net_file_never_fetches(monkeypatch, tmp_path):
 
     assert started == [str(net_file)]
     assert model.sumo.network == {"path": os.path.abspath(str(net_file))}
+
+
+def model_with_network(edges, boundary):
+    integration = SUMOIntegration({})
+    integration.network = FakeNetwork(edges, boundary)
+    model = ParkingModel(config_dict=small_config(arrival_rate=0), strategy="auction")
+    model.sumo = integration
+    model.use_sumo = True
+    return model
+
+
+def test_pos_to_edge_id_spans_the_whole_city_network():
+    """The old hardcoded 20-cell assumption confined every spawn to 0-200 m."""
+    south_west = FakeEdge("south_west", shape=[(10.0, 10.0)])
+    north_east = FakeEdge("north_east", shape=[(4900.0, 4900.0)])
+    model = model_with_network([south_west, north_east], (0.0, 0.0, 5000.0, 5000.0))
+
+    assert model._pos_to_edge_id((19, 0)) == "north_east"
+    assert model._pos_to_edge_id((0, 19)) == "south_west"
+
+
+def test_pos_to_edge_id_respects_north_south_orientation():
+    north = FakeEdge("north", shape=[(50.0, 4950.0)])
+    south = FakeEdge("south", shape=[(50.0, 50.0)])
+    model = model_with_network([north, south], (0.0, 0.0, 5000.0, 5000.0))
+
+    assert model._pos_to_edge_id((9, 0)) == "north"
+    assert model._pos_to_edge_id((9, 19)) == "south"
+
+
+def test_pos_to_edge_id_returns_none_for_a_degenerate_network():
+    model = model_with_network(
+        [FakeEdge("road", shape=[(5.0, 5.0)])], (0.0, 0.0, 0.0, 0.0)
+    )
+
+    assert model._pos_to_edge_id((1, 1)) is None
+
+
+def test_projection_rebuilds_when_the_network_changes():
+    model = model_with_network(
+        [FakeEdge("old", shape=[(90.0, 10.0)])], (0.0, 0.0, 100.0, 100.0)
+    )
+    assert model._pos_to_edge_id((9, 9)) == "old"
+
+    model.sumo.network = FakeNetwork(
+        [FakeEdge("new", shape=[(95.0, 95.0)])], (0.0, 0.0, 1000.0, 1000.0)
+    )
+
+    assert model._pos_to_edge_id((9, 9)) == "new"
+
+
+def test_mapping_diagnostics_report_extent_and_car_legal_share(capsys):
+    model = model_with_network(
+        [
+            FakeEdge("road", shape=[(10.0, 10.0)]),
+            FakeEdge("walk", shape=[(20.0, 20.0)], passenger=False),
+        ],
+        (0.0, 0.0, 500.0, 400.0),
+    )
+
+    model._describe_network_mapping()
+
+    printed = capsys.readouterr().out
+    assert "network extent 500x400 m" in printed
+    assert "1 of 2 edges take cars" in printed
+
+
+def test_mapping_diagnostics_never_break_on_a_network_stub(capsys):
+    model = ParkingModel(config_dict=small_config(arrival_rate=0), strategy="auction")
+    model.sumo = SUMOIntegration({})
+    model.sumo.network = {"path": "somewhere"}
+
+    model._describe_network_mapping()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_spawn_edge_spread_is_reported_after_a_sumo_run(capsys):
+    model = model_with_network(
+        [FakeEdge("a", shape=[(10.0, 10.0)]), FakeEdge("b", shape=[(90.0, 90.0)])],
+        (0.0, 0.0, 100.0, 100.0),
+    )
+    model._pos_to_edge_id((0, 19))
+    model._pos_to_edge_id((19, 0))
+    capsys.readouterr()
+
+    model.get_results()
+
+    assert "spawn mapping used 2 distinct edges across 2 mapped cells" in (
+        capsys.readouterr().out
+    )
+
+
+CACHED_CITY_NET = os.path.join("output", "sumo", "kuala_lumpur", "kuala_lumpur.net.xml")
+
+
+def _random_stream(model, run_mapping):
+    """Draw the same seeded numbers, optionally doing mapping work in between."""
+    import random
+
+    import numpy as np
+
+    random.seed(1234)
+    np.random.seed(1234)
+    head = [random.random(), float(np.random.random())]
+    if run_mapping:
+        for gx in range(20):
+            for gy in range(20):
+                model._pos_to_edge_id((gx, gy))
+    tail = [random.random(), float(np.random.random())]
+    return head + tail
+
+
+def test_spawn_mapping_consumes_no_randomness():
+    """Headline KPIs stay bit-identical only because this path draws no numbers."""
+    # The model is built before the seeded window: spot creation legitimately
+    # consumes randomness in both cases.
+    model = model_with_network(
+        [FakeEdge("a", shape=[(10.0, 10.0)]), FakeEdge("b", shape=[(90.0, 90.0)])],
+        (0.0, 0.0, 100.0, 100.0),
+    )
+
+    assert _random_stream(model, run_mapping=False) == _random_stream(
+        model, run_mapping=True
+    )
+
+
+@pytest.mark.skipif(not os.path.isfile(CACHED_CITY_NET), reason="no cached city network")
+def test_projection_reaches_the_whole_cached_city_network():
+    import sumolib
+
+    from engine.geometry import GridProjection
+
+    net = sumolib.net.readNet(CACHED_CITY_NET)
+    model = ParkingModel(config_dict=small_config(arrival_rate=0), strategy="auction")
+    model.sumo = SUMOIntegration({})
+    model.sumo.network = net
+    model.use_sumo = True
+
+    xmin, ymin, xmax, ymax = net.getBoundary()
+    projection = GridProjection.from_net(net)
+    used = set()
+    for gx in range(0, model.width, 3):
+        for gy in range(0, model.height, 3):
+            px, py = projection.cell_to_xy(gx, gy, model.width, model.height)
+            assert xmin <= px <= xmax and ymin <= py <= ymax
+            edge_id = model._pos_to_edge_id((gx, gy))
+            assert edge_id is not None
+            used.add(edge_id)
+
+    # The collapsed 0-200 m mapping reached 2 edges on this network.
+    assert len(used) >= 20
