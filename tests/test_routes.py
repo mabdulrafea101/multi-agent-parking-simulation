@@ -579,7 +579,82 @@ def test_visualization_discovers_recorded_run_metadata(tmp_path, monkeypatch):
 
     assert "run_17" in visualize_body
     assert "12 frames" in visualize_body
-    assert discovered_runs == [{"run_id": "run_17", "meta": metadata}]
+    # An ad-hoc /api/viz/record run never had an experiment row, so it is not an orphan.
+    assert discovered_runs == [{"run_id": "run_17", "meta": metadata, "orphaned": False}]
+
+
+def test_visualization_flags_orphans_and_deletes_recordings(tmp_path, monkeypatch):
+    frames_dir = tmp_path / "output" / "frames"
+    frames_dir.mkdir(parents=True)
+    for name in ("run_dashboard_9", "run_dashboard_5", "run_123"):
+        (frames_dir / f"{name}_meta.json").write_text(json.dumps({"total_frames": 3}))
+        (frames_dir / f"{name}_frames.json").write_text("[]")
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, status) VALUES (?, ?, 'completed')",
+        (5, "2026-08-30T08:00:00"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(frames_dir))
+
+    client = create_app().test_client()
+    runs = {entry["run_id"]: entry["orphaned"] for entry in client.get("/api/viz/runs").get_json()}
+
+    assert runs == {"run_dashboard_9": True, "run_dashboard_5": False, "run_123": False}
+    assert "no record" in client.get("/visualize").get_data(as_text=True)
+
+    assert client.post("/visualize/run/run_dashboard_9/delete").status_code == 302
+    assert not (frames_dir / "run_dashboard_9_meta.json").exists()
+    assert not (frames_dir / "run_dashboard_9_frames.json").exists()
+    assert (frames_dir / "run_dashboard_5_meta.json").exists()
+    assert (frames_dir / "run_123_frames.json").exists()
+
+
+def test_visualization_paths_reject_unsafe_run_ids(tmp_path, monkeypatch):
+    frames_dir = tmp_path / "output" / "frames"
+    frames_dir.mkdir(parents=True)
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(frames_dir))
+
+    for unsafe in ("", "..", "run_../outside", "run_a/b", "run_a\\..\\b", "notrun_1", "run_$x"):
+        assert routes._visualization_paths(unsafe) is None, unsafe
+
+    assert routes._visualization_paths("run_dashboard_9") is not None
+
+
+def test_visualization_delete_and_reads_reject_missing_ids(tmp_path, monkeypatch):
+    frames_dir = tmp_path / "output" / "frames"
+    frames_dir.mkdir(parents=True)
+    (frames_dir / "run_5_meta.json").write_text("{}")
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(frames_dir))
+
+    client = create_app().test_client()
+
+    assert client.post("/visualize/run/run_404/delete").status_code == 404
+    assert client.get("/api/viz/meta/run_5").status_code == 200
+    assert client.get("/api/viz/meta/run_missing").status_code == 404
+    assert client.get("/api/viz/frames/run_missing").status_code == 404
+
+
+def test_startup_reports_orphaned_recordings(tmp_path, monkeypatch, capsys):
+    frames_dir = tmp_path / "output" / "frames"
+    frames_dir.mkdir(parents=True)
+    (frames_dir / "run_dashboard_42_meta.json").write_text("{}")
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(frames_dir))
+    routes._get_db().close()
+    capsys.readouterr()
+
+    routes._report_orphaned_recordings()
+
+    printed = capsys.readouterr().out
+    assert "1 recording(s) have no experiment record" in printed
+    assert "run_dashboard_42" in printed
 
 
 def test_record_dashboard_experiment_saves_real_metadata_and_route_files(tmp_path, monkeypatch):

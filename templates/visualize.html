@@ -28,6 +28,13 @@
     #kpi-chart-canvas { width: 100%; height: 120px; }
     .run-selector { margin-bottom: 0.75rem; }
     .run-selector select { width: 100%; }
+    .run-manager { max-height: 9rem; overflow-y: auto; font-size: 0.72rem; }
+    .run-manager .run-row { display: flex; align-items: center; gap: 0.35rem; padding: 0.12rem 0; }
+    .run-manager .run-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cbd5e1; }
+    .run-manager .run-badge { color: #fbbf24; border: 1px solid #78350f; border-radius: 4px; padding: 0 0.25rem; }
+    .run-manager .run-delete { background: #374151; color: #cbd5e1; border: 1px solid #2d3148; border-radius: 4px; font-size: 0.68rem; padding: 0.1rem 0.35rem; cursor: pointer; }
+    .run-manager .run-delete:hover { background: #7f1d1d; color: #fff; }
+    .run-manager form { margin: 0; }
     #recording-indicator { display: none; color: #ef4444; font-size: 0.8rem; animation: pulse 1s infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
@@ -72,6 +79,26 @@
                     {% endfor %}
                 </select>
             </div>
+
+            {% if runs %}
+            <div class="run-selector">
+                <label>Recordings ({{ runs|length }})</label>
+                <div class="run-manager">
+                    {% for r in runs %}
+                    <div class="run-row">
+                        <span class="run-name" title="{{ r.run_id }}">{{ r.run_id }}</span>
+                        {% if r.orphaned %}
+                        <span class="run-badge" title="Its experiment record was deleted">no record</span>
+                        {% endif %}
+                        <form method="POST" action="{{ url_for('dashboard.viz_run_delete', run_id=r.run_id) }}"
+                              onsubmit="return confirm('Delete this recording and its frames?');">
+                            <button type="submit" class="run-delete">Delete</button>
+                        </form>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
 
             <div id="recording-indicator">&#9679; REC</div>
 

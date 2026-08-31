@@ -475,6 +475,7 @@ Open http://127.0.0.1:5000 (or your chosen port) in a browser.
 | `GET /figure/<name>` | Serve a PNG figure |
 | `POST /reset` | Clear experiment state |
 | `GET /visualize` | Three.js visualization page |
+| `POST /visualize/run/<run_id>/delete` | Delete one visualization recording |
 | `GET /api/viz/runs` | List recorded runs |
 | `GET /api/viz/frames/<run_id>` | Frames JSON for a run |
 | `GET /api/viz/meta/<run_id>` | Metadata for a run |

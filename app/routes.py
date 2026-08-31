@@ -971,6 +971,91 @@ def _delete_visualization_frames(run_id):
     return removed
 
 
+# Recording ids are run_dashboard_<experiment id>[_<collision>] or run_<unix ts>
+# from the ad-hoc record endpoint; none of them may contain a separator.
+_SAFE_RUN_ID = re.compile(r"^run_[A-Za-z0-9_-]+$")
+_DASHBOARD_RUN_ID = re.compile(r"^run_dashboard_(\d+)(?:_\d+)?$")
+
+
+def _visualization_paths(run_id):
+    """Real paths of a recording's meta and frames files, or None if unsafe."""
+    if not _SAFE_RUN_ID.match(run_id or "") or not os.path.isdir(VIZ_FRAMES_DIR):
+        return None
+
+    base = os.path.realpath(VIZ_FRAMES_DIR)
+    paths = []
+    for suffix in ("_meta.json", "_frames.json"):
+        path = os.path.realpath(os.path.join(VIZ_FRAMES_DIR, f"{run_id}{suffix}"))
+        try:
+            inside = os.path.commonpath([base, path]) == base
+        except ValueError:
+            inside = False
+        if not inside:
+            return None
+        paths.append(path)
+    return tuple(paths)
+
+
+def _known_experiment_ids():
+    conn = _get_db()
+    try:
+        return {row[0] for row in conn.execute("SELECT id FROM experiments")}
+    finally:
+        conn.close()
+
+
+def _is_orphaned_recording(run_id, known_experiment_ids):
+    """True when a dashboard recording's experiment row no longer exists.
+
+    Ad-hoc recordings made through POST /api/viz/record were never tied to a
+    row, so they are not orphans - only the dashboard family can be.
+    """
+    match = _DASHBOARD_RUN_ID.match(run_id)
+    if not match:
+        return False
+    return int(match.group(1)) not in known_experiment_ids
+
+
+def _list_visualization_runs():
+    """Every readable recording, newest first, flagged when its run is gone."""
+    runs = []
+    if not os.path.isdir(VIZ_FRAMES_DIR):
+        return runs
+
+    known_experiment_ids = _known_experiment_ids()
+    for fname in sorted(os.listdir(VIZ_FRAMES_DIR), reverse=True):
+        if not fname.endswith("_meta.json"):
+            continue
+        run_id = fname[: -len("_meta.json")]
+        try:
+            with open(os.path.join(VIZ_FRAMES_DIR, fname)) as file:
+                meta = json.load(file)
+        except Exception:
+            continue
+        runs.append({
+            "run_id": run_id,
+            "meta": meta,
+            "orphaned": _is_orphaned_recording(run_id, known_experiment_ids),
+        })
+    return runs
+
+
+def _report_orphaned_recordings():
+    """Name leftovers at startup; never delete data nobody asked to remove."""
+    try:
+        orphans = [run["run_id"] for run in _list_visualization_runs() if run["orphaned"]]
+    except sqlite3.Error:
+        return
+    if orphans:
+        print(f"  Visualization: {len(orphans)} recording(s) have no experiment "
+              f"record: {', '.join(sorted(orphans))}")
+
+
+@bp.record_once
+def _report_orphans_on_start(_state):
+    _report_orphaned_recordings()
+
+
 def _record_dashboard_experiment(
     scenario,
     strategy,
@@ -1026,45 +1111,42 @@ def _record_dashboard_experiment(
 @bp.route("/visualize")
 def visualize():
     """Render the Three.js visualization page."""
-    # List available recorded runs
-    runs = []
-    if os.path.isdir(VIZ_FRAMES_DIR):
-        for fname in sorted(os.listdir(VIZ_FRAMES_DIR), reverse=True):
-            if fname.endswith("_meta.json"):
-                run_id = fname.replace("_meta.json", "")
-                try:
-                    with open(os.path.join(VIZ_FRAMES_DIR, fname)) as f:
-                        meta = json.load(f)
-                    runs.append({"run_id": run_id, "meta": meta})
-                except Exception:
-                    pass
-    return render_template("visualize.html", runs=runs)
+    return render_template("visualize.html", runs=_list_visualization_runs())
 
 
 @bp.route("/api/viz/runs")
 def viz_runs():
     """List available recorded simulation runs."""
-    runs = []
-    if os.path.isdir(VIZ_FRAMES_DIR):
-        for fname in sorted(os.listdir(VIZ_FRAMES_DIR), reverse=True):
-            if fname.endswith("_meta.json"):
-                run_id = fname.replace("_meta.json", "")
-                try:
-                    with open(os.path.join(VIZ_FRAMES_DIR, fname)) as f:
-                        meta = json.load(f)
-                    runs.append({"run_id": run_id, "meta": meta})
-                except Exception:
-                    pass
-    return jsonify(runs)
+    return jsonify(_list_visualization_runs())
+
+
+@bp.route("/visualize/run/<run_id>/delete", methods=["POST"])
+def viz_run_delete(run_id):
+    """Delete one visualization recording and its frames."""
+    paths = _visualization_paths(run_id)
+    if paths is None:
+        return "Not found", 404
+
+    meta_path, frames_path = paths
+    existing = [path for path in (meta_path, frames_path) if os.path.isfile(path)]
+    if not existing:
+        return "Not found", 404
+
+    for path in existing:
+        try:
+            os.remove(path)
+        except OSError as exc:
+            print(f"  Cleanup: could not remove {path} ({exc})")
+    return redirect(url_for("dashboard.visualize"))
 
 
 @bp.route("/api/viz/frames/<run_id>")
 def viz_frames(run_id):
     """Return frame data for a specific run."""
-    frames_path = os.path.join(VIZ_FRAMES_DIR, f"{run_id}_frames.json")
-    if not os.path.exists(frames_path):
+    paths = _visualization_paths(run_id)
+    if paths is None or not os.path.exists(paths[1]):
         return jsonify({"error": "Run not found"}), 404
-    with open(frames_path) as f:
+    with open(paths[1]) as f:
         frames = json.load(f)
     return jsonify(frames)
 
@@ -1072,10 +1154,10 @@ def viz_frames(run_id):
 @bp.route("/api/viz/meta/<run_id>")
 def viz_meta(run_id):
     """Return metadata for a specific run."""
-    meta_path = os.path.join(VIZ_FRAMES_DIR, f"{run_id}_meta.json")
-    if not os.path.exists(meta_path):
+    paths = _visualization_paths(run_id)
+    if paths is None or not os.path.exists(paths[0]):
         return jsonify({"error": "Run not found"}), 404
-    with open(meta_path) as f:
+    with open(paths[0]) as f:
         meta = json.load(f)
     return jsonify(meta)
 
