@@ -1042,6 +1042,107 @@ def test_history_delete_rejects_symlinked_run_directory(tmp_path, monkeypatch):
     conn.close()
 
 
+def test_history_deletes_stopped_run_that_never_wrote_artifacts(tmp_path, monkeypatch):
+    """A run interrupted before it wrote anything must still be clearable."""
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, status, results_path) VALUES (?, ?, 'stopped', NULL)",
+        (12, "2026-08-30T08:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = create_app().test_client().post("/history/run/12/delete")
+
+    assert response.status_code == 302
+    conn = routes._get_db()
+    assert conn.execute("SELECT 1 FROM experiments WHERE id=12").fetchone() is None
+    conn.close()
+
+
+def test_history_deletes_error_run_together_with_its_leftover_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    run_dir = tmp_path / "output" / "run_13"
+    run_dir.mkdir(parents=True)
+    (run_dir / "partial.txt").write_text("written before the failure\n")
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, status, results_path, error) VALUES (?, ?, 'error', NULL, ?)",
+        (13, "2026-08-30T08:00:00", "Could not prepare the SUMO network"),
+    )
+    conn.commit()
+    conn.close()
+
+    response = create_app().test_client().post("/history/run/13/delete")
+
+    assert response.status_code == 302
+    assert not run_dir.exists()
+    conn = routes._get_db()
+    assert conn.execute("SELECT 1 FROM experiments WHERE id=13").fetchone() is None
+    conn.close()
+
+
+def test_history_deletes_record_when_run_directory_was_removed_outside_the_app(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    stored_path = tmp_path / "output" / "run_14" / "experiment_results.csv"
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, status, results_path) VALUES (?, ?, 'completed', ?)",
+        (14, "2026-08-30T08:00:00", str(stored_path)),
+    )
+    conn.commit()
+    conn.close()
+
+    response = create_app().test_client().post("/history/run/14/delete")
+
+    assert response.status_code == 302
+    conn = routes._get_db()
+    assert conn.execute("SELECT 1 FROM experiments WHERE id=14").fetchone() is None
+    conn.close()
+
+
+def test_history_delete_returns_404_for_unknown_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+
+    response = create_app().test_client().post("/history/run/999/delete")
+
+    assert response.status_code == 404
+
+
+def test_history_delete_removes_visualization_frames_of_that_run_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    frames_dir = tmp_path / "output" / "frames"
+    frames_dir.mkdir(parents=True)
+    kept = [
+        "run_dashboard_70_meta.json",   # id prefix collision
+        "run_dashboard_8_meta.json",
+        "run_dashboard_7_notes.txt",
+    ]
+    for name in ["run_dashboard_7_meta.json", "run_dashboard_7_frames.json",
+                 "run_dashboard_7_2_meta.json"] + kept:
+        (frames_dir / name).write_text("{}")
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, status) VALUES (?, ?, 'stopped')",
+        (7, "2026-08-30T08:00:00"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(frames_dir))
+
+    response = create_app().test_client().post("/history/run/7/delete")
+
+    assert response.status_code == 302
+    remaining = sorted(name for name in os.listdir(frames_dir))
+    assert remaining == sorted(kept)
+
+
 @pytest.mark.parametrize(
     "status",
     [

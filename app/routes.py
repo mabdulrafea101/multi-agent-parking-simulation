@@ -3,6 +3,7 @@ import csv
 import copy
 import json
 import os
+import re
 import shutil
 import sqlite3
 import threading
@@ -663,7 +664,6 @@ def results():
     latest_run_id = None
     if all_figures:
         # Extract run numbers from figure paths like "run_25/pst_comparison.png"
-        import re
         run_numbers = set()
         for fig in all_figures:
             match = re.search(r'run_(\d+)/', fig)
@@ -752,12 +752,18 @@ def history_run(run_id):
 
 @bp.route("/history/run/<int:run_id>/delete", methods=["POST"])
 def history_delete(run_id):
-    """Delete one historical run and its run-local artifacts."""
+    """Delete one historical run record and whatever artifacts it left behind.
+
+    A run that never finished still has a record, but no artifacts: results_path
+    stays NULL until a completed batch writes it, and the run directory is only
+    created after the whole suite returns. Such a row must stay deletable, or
+    Failed and Stopped entries can never be cleared from the history page.
+    """
     conn = _get_db()
     row = conn.execute(
         "SELECT results_path FROM experiments WHERE id=?", (run_id,)
     ).fetchone()
-    if not row or not row["results_path"]:
+    if not row:
         conn.close()
         return "Not found", 404
 
@@ -765,39 +771,46 @@ def history_delete(run_id):
     output_dir = os.path.realpath(output_path)
     literal_run_dir = os.path.join(output_path, f"run_{run_id}")
     expected_run_dir = os.path.join(output_dir, f"run_{run_id}")
-    # Reject any directory link here: os.path.islink() misses Windows junctions,
-    # and rmtree would then follow the link into an unrelated tree.
-    if not os.path.isdir(literal_run_dir) or os.path.realpath(literal_run_dir) != expected_run_dir:
+    # Reject any directory link: os.path.islink() misses Windows junctions, and
+    # rmtree would then follow the link into an unrelated tree.
+    if os.path.exists(literal_run_dir) and os.path.realpath(literal_run_dir) != expected_run_dir:
         conn.close()
         return "Not found", 404
 
-    results_path = os.path.realpath(row["results_path"])
-    run_dir = os.path.realpath(os.path.dirname(row["results_path"]))
-    try:
-        safe_results_path = (
-            run_dir == expected_run_dir
-            and results_path != expected_run_dir
-            and os.path.commonpath([expected_run_dir, results_path]) == expected_run_dir
-        )
-    except ValueError:
-        safe_results_path = False
-    if not safe_results_path:
+    if row["results_path"]:
+        results_path = os.path.realpath(row["results_path"])
+        run_dir = os.path.realpath(os.path.dirname(row["results_path"]))
+        try:
+            safe_results_path = (
+                run_dir == expected_run_dir
+                and results_path != expected_run_dir
+                and os.path.commonpath([expected_run_dir, results_path]) == expected_run_dir
+            )
+        except ValueError:
+            safe_results_path = False
+        # An untrustworthy stored path stays a hard refusal: nothing is deleted
+        # and the record is kept, so the anomaly remains visible.
+        if not safe_results_path:
+            conn.close()
+            return "Not found", 404
+
+    literal_figure_dir = os.path.join(output_path, "figures", f"run_{run_id}")
+    expected_figure_dir = os.path.join(output_dir, "figures", f"run_{run_id}")
+    if os.path.exists(literal_figure_dir) and os.path.realpath(literal_figure_dir) != expected_figure_dir:
         conn.close()
         return "Not found", 404
-
-    figure_dir = os.path.realpath(os.path.join(output_dir, "figures", f"run_{run_id}"))
     try:
-        inside_output = os.path.commonpath([output_dir, figure_dir]) == output_dir
+        inside_output = os.path.commonpath([output_dir, expected_figure_dir]) == output_dir
     except ValueError:
         inside_output = False
     if not inside_output:
         conn.close()
         return "Not found", 404
 
-    if os.path.isdir(run_dir):
-        shutil.rmtree(run_dir)
-    if os.path.isdir(figure_dir):
-        shutil.rmtree(figure_dir)
+    for directory in (expected_run_dir, expected_figure_dir):
+        if os.path.isdir(directory):
+            shutil.rmtree(directory)
+    _delete_visualization_frames(run_id)
     conn.execute("DELETE FROM experiments WHERE id=?", (run_id,))
     conn.commit()
     conn.close()
@@ -931,6 +944,31 @@ def reset():
 
 # ── Visualization endpoints ─────────────────────────────────────────────
 VIZ_FRAMES_DIR = os.path.join(SIMULATION_DIR, "output", "frames")
+
+# run_dashboard_<id>_{meta,frames}.json, plus the _2/_3 suffix the recorder
+# appends when it resolves a name collision. Anchored to the full run id so
+# deleting run 7 can never match run 70.
+def _visualization_frame_pattern(run_id):
+    return re.compile(rf"^run_dashboard_{int(run_id)}(?:_\d+)?_(?:meta|frames)\.json$")
+
+
+def _delete_visualization_frames(run_id):
+    """Remove the 3D-viewer recordings left behind by one experiment run."""
+    if not os.path.isdir(VIZ_FRAMES_DIR):
+        return []
+
+    pattern = _visualization_frame_pattern(run_id)
+    removed = []
+    for name in sorted(os.listdir(VIZ_FRAMES_DIR)):
+        if not pattern.match(name):
+            continue
+        path = os.path.join(VIZ_FRAMES_DIR, name)
+        try:
+            os.remove(path)
+            removed.append(path)
+        except OSError as exc:
+            print(f"  Cleanup: could not remove {path} ({exc})")
+    return removed
 
 
 def _record_dashboard_experiment(
