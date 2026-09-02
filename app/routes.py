@@ -129,6 +129,8 @@ experiment_state = {
     "error_message": None,
     "run_id": None,
     "visualization_run_id": None,
+    "visualization_run_ids": [],
+    "record_visualization": True,
 }
 
 experiment_lock = threading.Lock()
@@ -334,7 +336,7 @@ def _write_summary_csv(path, summary_rows):
         writer.writerows(summary_rows)
 
 
-def _run_experiment_async(scenario, strategy, replications, simulation_type="mesa", city=None, refresh_osm=False):
+def _run_experiment_async(scenario, strategy, replications, simulation_type="mesa", city=None, refresh_osm=False, record_visualization=True):
     """Run the experiment in a background thread."""
     global experiment_state
     simulation_type = simulation_type or "mesa"
@@ -365,6 +367,8 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
                 "returncode": None,
                 "run_id": run_id,
                 "visualization_run_id": None,
+                "visualization_run_ids": [],
+                "record_visualization": record_visualization,
             }
         )
 
@@ -454,32 +458,49 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
         summary_rows = runner.compute_summary(summary_input)
         _write_summary_csv(os.path.join(run_output_dir, "summary_statistics.csv"), summary_rows)
 
-        recording_scenario = scenario or (run_rows[0].get("scenario") if run_rows else None)
-        recording_strategy = strategy or (run_rows[0].get("strategy") if run_rows else None)
-        visualization_run_id = None
-        try:
-            visualization_run_id = _record_dashboard_experiment(
-                scenario=recording_scenario,
-                strategy=recording_strategy,
-                simulation_type=simulation_type,
-                city=city,
-                experiment_run_id=run_id,
-                config=getattr(runner, "base_config", None),
-                scenario_config=(
-                    getattr(runner, "scenarios_config", {}).get("scenarios", {}).get(recording_scenario, {})
-                    if recording_scenario else {}
-                ),
-            )
-            with experiment_lock:
-                experiment_state["visualization_run_id"] = visualization_run_id
-                experiment_state["progress_log"].append(
-                    f"Visualization recording saved as {visualization_run_id}."
-                )
-        except Exception as exc:
+        combos = {
+            (row["scenario"], row["strategy"])
+            for row in rows
+            if row.get("scenario") is not None and row.get("strategy") is not None
+        }
+        sorted_combos = sorted(combos, key=lambda c: (c[0], c[1]))
+        visualization_run_ids = []
+        if record_visualization and sorted_combos:
             with experiment_lock:
                 experiment_state["progress_log"].append(
-                    f"Visualization recording failed: {exc}"
+                    f"Recording {len(sorted_combos)} visualization combo(s): "
+                    + ", ".join(f"{s} · {st}" for s, st in sorted_combos)
                 )
+            for index, (combo_scenario, combo_strategy) in enumerate(sorted_combos):
+                try:
+                    combo_run_id = _record_dashboard_experiment(
+                        scenario=combo_scenario,
+                        strategy=combo_strategy,
+                        simulation_type=simulation_type,
+                        city=city,
+                        experiment_run_id=run_id,
+                        combo_index=index,
+                        config=getattr(runner, "base_config", None),
+                        scenario_config=(
+                            getattr(runner, "scenarios_config", {}).get("scenarios", {}).get(combo_scenario, {})
+                            if combo_scenario else {}
+                        ),
+                    )
+                    visualization_run_ids.append(combo_run_id)
+                    with experiment_lock:
+                        experiment_state["progress_log"].append(
+                            f"Visualization recording saved as {combo_run_id} "
+                            f"({combo_scenario} · {combo_strategy})."
+                        )
+                except Exception as exc:
+                    with experiment_lock:
+                        experiment_state["progress_log"].append(
+                            f"Visualization recording failed for {combo_scenario} · {combo_strategy}: {exc}"
+                        )
+
+        with experiment_lock:
+            experiment_state["visualization_run_ids"] = visualization_run_ids
+            experiment_state["visualization_run_id"] = visualization_run_ids[0] if visualization_run_ids else None
 
         run_figures_dir = os.path.join(SIMULATION_DIR, "output", "figures", f"run_{run_id}")
         os.makedirs(run_figures_dir, exist_ok=True)
@@ -498,7 +519,7 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
                 "completed_runs": experiment_state["completed_runs"],
                 "total_runs": total_runs,
                 "log": list(experiment_state["progress_log"]),
-                "visualization_run_id": visualization_run_id,
+                "visualization_run_ids": visualization_run_ids,
             }
         _update_experiment_record(
             run_id,
@@ -521,6 +542,7 @@ def _run_experiment_async(scenario, strategy, replications, simulation_type="mes
                 "completed_runs": experiment_state["completed_runs"],
                 "total_runs": total_runs,
                 "log": list(experiment_state["progress_log"]),
+                "visualization_run_ids": experiment_state.get("visualization_run_ids", []),
             }
         _update_experiment_record(
             run_id,
@@ -553,6 +575,7 @@ def run_experiment():
         if simulation_type != "osm_city":
             city = None
         refresh_osm = bool(request.form.get("refresh_osm")) and city is not None
+        record_visualization = bool(request.form.get("record_visualization"))
 
         with experiment_lock:
             if experiment_state["status"] == "running":
@@ -579,11 +602,13 @@ def run_experiment():
                     "returncode": None,
                     "run_id": None,
                     "visualization_run_id": None,
+                    "visualization_run_ids": [],
+                    "record_visualization": record_visualization,
                 }
             )
             thread = threading.Thread(
                 target=_run_experiment_async,
-                args=(scenario, strategy, replications, simulation_type, city, refresh_osm),
+                args=(scenario, strategy, replications, simulation_type, city, refresh_osm, record_visualization),
                 daemon=True,
             )
             experiment_thread = thread
@@ -678,6 +703,10 @@ def results():
     root_figures = [figure for figure in all_figures if "/" not in figure]
     primary_figures = _primary_figures(latest_figures, root_figures) if latest_figures else _primary_figures(root_figures)
 
+    has_viz_recordings = False
+    if latest_run_id is not None:
+        has_viz_recordings = _has_visualization_recordings(latest_run_id)
+
     return render_template(
         "results.html",
         rows=rows,
@@ -687,6 +716,7 @@ def results():
         primary_figures=primary_figures,
         latest_figures=latest_figures,
         latest_run_id=latest_run_id,
+        has_viz_recordings=has_viz_recordings,
         state=state,
         tooltips=RESULTS_TOOLTIPS,
     )
@@ -705,9 +735,12 @@ def history():
         """
     ).fetchall()
     conn.close()
+    run_dicts = [dict(run) for run in runs]
+    for run in run_dicts:
+        run["has_viz_recordings"] = _has_visualization_recordings(run["id"])
     return render_template(
         "history.html",
-        runs=[dict(run) for run in runs],
+        runs=run_dicts,
         tooltips=RESULTS_TOOLTIPS,
     )
 
@@ -743,6 +776,7 @@ def history_run(run_id):
         primary_figures=primary_figures,
         latest_figures=figures,
         latest_run_id=run_id,
+        has_viz_recordings=_has_visualization_recordings(run_id),
         state={"status": row["status"], "error_message": row["error"], "progress_log": []},
         tooltips=RESULTS_TOOLTIPS,
         history_run_id=run_id,
@@ -938,6 +972,8 @@ def reset():
             "run_rows": [],
             "run_id": None,
             "visualization_run_id": None,
+            "visualization_run_ids": [],
+            "record_visualization": True,
         }
     return redirect(url_for("dashboard.index"))
 
@@ -945,11 +981,19 @@ def reset():
 # ── Visualization endpoints ─────────────────────────────────────────────
 VIZ_FRAMES_DIR = os.path.join(SIMULATION_DIR, "output", "frames")
 
-# run_dashboard_<id>_{meta,frames}.json, plus the _2/_3 suffix the recorder
-# appends when it resolves a name collision. Anchored to the full run id so
-# deleting run 7 can never match run 70.
+# run_dashboard_<id>_<index>_{meta,frames}.json, plus the _2/_3 suffix the recorder
+# appends when it resolves a name collision (run_dashboard_<id>_<index>_<n>_{meta,frames}).
+# Anchored to the full run id so deleting run 7 can never match run 70.
 def _visualization_frame_pattern(run_id):
-    return re.compile(rf"^run_dashboard_{int(run_id)}(?:_\d+)?_(?:meta|frames)\.json$")
+    return re.compile(rf"^run_dashboard_{int(run_id)}(?:_\d+)*_(?:meta|frames)\.json$")
+
+
+def _has_visualization_recordings(experiment_id):
+    """Check whether any visualization recordings exist for an experiment."""
+    if not os.path.isdir(VIZ_FRAMES_DIR):
+        return False
+    pattern = _visualization_frame_pattern(experiment_id)
+    return any(pattern.match(name) for name in os.listdir(VIZ_FRAMES_DIR))
 
 
 def _delete_visualization_frames(run_id):
@@ -971,10 +1015,10 @@ def _delete_visualization_frames(run_id):
     return removed
 
 
-# Recording ids are run_dashboard_<experiment id>[_<collision>] or run_<unix ts>
+# Recording ids are run_dashboard_<experiment id>_<index>[_<collision>] or run_<unix ts>
 # from the ad-hoc record endpoint; none of them may contain a separator.
 _SAFE_RUN_ID = re.compile(r"^run_[A-Za-z0-9_-]+$")
-_DASHBOARD_RUN_ID = re.compile(r"^run_dashboard_(\d+)(?:_\d+)?$")
+_DASHBOARD_RUN_ID = re.compile(r"^run_dashboard_(\d+)(?:_\d+)*$")
 
 
 def _visualization_paths(run_id):
@@ -1062,6 +1106,7 @@ def _record_dashboard_experiment(
     simulation_type="mesa",
     city=None,
     experiment_run_id=None,
+    combo_index=0,
     config=None,
     scenario_config=None,
 ):
@@ -1095,13 +1140,17 @@ def _record_dashboard_experiment(
         model.step()
     recorder.capture_tick()
     requested_run_id = (
-        f"run_dashboard_{experiment_run_id}" if experiment_run_id is not None else None
+        f"run_dashboard_{experiment_run_id}_{combo_index}" if experiment_run_id is not None else None
     )
     run_id, meta_path, _ = recorder.save(VIZ_FRAMES_DIR, run_id=requested_run_id)
 
     with open(meta_path, "r") as file:
         metadata = json.load(file)
     metadata["scenario"] = scenario
+    metadata["strategy"] = strategy
+    metadata["simulation_type"] = simulation_type
+    if city:
+        metadata["city"] = city
     metadata["dashboard_experiment_id"] = experiment_run_id
     with open(meta_path, "w") as file:
         json.dump(metadata, file)
@@ -1111,13 +1160,39 @@ def _record_dashboard_experiment(
 @bp.route("/visualize")
 def visualize():
     """Render the Three.js visualization page."""
-    return render_template("visualize.html", runs=_list_visualization_runs())
+    experiment_id = request.args.get("experiment", type=int)
+    runs = _list_visualization_runs()
+    if experiment_id is not None:
+        runs = [r for r in runs if r["meta"].get("dashboard_experiment_id") == experiment_id]
+    runs_by_experiment = _group_runs_by_experiment(runs)
+    return render_template("visualize.html", runs=runs, runs_by_experiment=runs_by_experiment, experiment_id=experiment_id)
+
+
+def _group_runs_by_experiment(runs):
+    """Group visualization runs by their experiment id for an optgroup dropdown."""
+    groups = []
+    by_id = {}
+    order = []
+    for r in runs:
+        exp_id = r["meta"].get("dashboard_experiment_id")
+        key = int(exp_id) if exp_id is not None else None
+        if key not in by_id:
+            by_id[key] = []
+            order.append(key)
+        by_id[key].append(r)
+    for key in order:
+        groups.append((key, by_id[key]))
+    return groups
 
 
 @bp.route("/api/viz/runs")
 def viz_runs():
     """List available recorded simulation runs."""
-    return jsonify(_list_visualization_runs())
+    experiment_id = request.args.get("experiment", type=int)
+    runs = _list_visualization_runs()
+    if experiment_id is not None:
+        runs = [r for r in runs if r["meta"].get("dashboard_experiment_id") == experiment_id]
+    return jsonify(runs)
 
 
 @bp.route("/visualize/run/<run_id>/delete", methods=["POST"])

@@ -74,8 +74,12 @@
                 <label>Select Run</label>
                 <select id="run-select">
                     <option value="">-- Select a recorded run --</option>
-                    {% for r in runs %}
-                    <option value="{{ r.run_id }}">{{ r.run_id }} ({{ r.meta.total_frames }} frames, {{ r.meta.strategy }})</option>
+                    {% for exp_id, group_runs in runs_by_experiment %}
+                    <optgroup label="{% if exp_id %}Experiment #{{ exp_id }}{% else %}Ad-hoc Recordings{% endif %}">
+                        {% for r in group_runs %}
+                        <option value="{{ r.run_id }}">{{ r.meta.scenario or '?' }} · {{ r.meta.strategy or '?' }} ({{ r.meta.total_frames }} frames)</option>
+                        {% endfor %}
+                    </optgroup>
                     {% endfor %}
                 </select>
             </div>
@@ -1578,9 +1582,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Auto-load first run if available
     const select = document.getElementById('run-select');
-    if (select.options.length > 1) {
-        select.selectedIndex = 1;
-        loadRun(select.value);
+    const firstRealOption = select.querySelector('option:not([value=""])');
+    if (firstRealOption) {
+        select.value = firstRealOption.value;
+        loadRun(firstRealOption.value);
     }
 });
 </script>

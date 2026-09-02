@@ -28,6 +28,9 @@
     <h2>Run #{{ history_run_id }}{% if run_at is defined %} — {{ run_at }}{% endif %}</h2>
     <div class="download-links">
         <a href="{{ url_for('dashboard.history') }}" class="btn btn-secondary">Back to History</a>
+        {% if has_viz_recordings %}
+        <a href="{{ url_for('dashboard.visualize', experiment=history_run_id) }}" class="btn btn-secondary">Visualize</a>
+        {% endif %}
         <a href="{{ url_for('dashboard.history_download', run_id=history_run_id, filename='experiment_results.csv') }}" class="btn btn-primary">Download experiment_results.csv</a>
         <a href="{{ url_for('dashboard.history_download', run_id=history_run_id, filename='summary_statistics.csv') }}" class="btn btn-secondary">Download summary_statistics.csv</a>
         <a href="{{ url_for('dashboard.history_download', run_id=history_run_id, filename='por_timeseries.csv') }}" class="btn btn-secondary">Download por_timeseries.csv</a>
@@ -134,6 +137,9 @@
 <div class="card">
     <h2>Downloads</h2>
     <div class="download-links">
+        {% if has_viz_recordings and latest_run_id is not none %}
+        <a href="{{ url_for('dashboard.visualize', experiment=latest_run_id) }}" class="btn btn-secondary">Visualize</a>
+        {% endif %}
         <a href="{{ url_for('dashboard.download', filename='experiment_results.csv') }}" class="btn btn-primary">Download experiment_results.csv</a>
         <a href="{{ url_for('dashboard.download', filename='summary_statistics.csv') }}" class="btn btn-secondary">Download summary_statistics.csv</a>
         <a href="{{ url_for('dashboard.download', filename='por_timeseries.csv') }}" class="btn btn-secondary">Download por_timeseries.csv</a>

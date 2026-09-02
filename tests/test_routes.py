@@ -684,12 +684,13 @@ def test_record_dashboard_experiment_saves_real_metadata_and_route_files(tmp_pat
 
     metadata_path = tmp_path / "output" / "frames" / f"{run_id}_meta.json"
     frames_path = tmp_path / "output" / "frames" / f"{run_id}_frames.json"
-    assert run_id.startswith("run_dashboard_23")
+    assert run_id.startswith("run_dashboard_23_0")
     assert metadata_path.is_file()
     assert frames_path.is_file()
     metadata = json.loads(metadata_path.read_text())
     assert metadata["scenario"] == "low_demand"
     assert metadata["strategy"] == "greedy"
+    assert metadata["simulation_type"] == "mesa"
     assert metadata["dashboard_experiment_id"] == 23
     assert metadata["visualization_run_id"] == run_id
     assert json.loads(frames_path.read_text())
@@ -844,6 +845,7 @@ def test_reset_clears_run_identifiers_with_consistent_state(monkeypatch):
     assert response.status_code == 302
     assert routes.experiment_state["run_id"] is None
     assert routes.experiment_state["visualization_run_id"] is None
+    assert routes.experiment_state["visualization_run_ids"] == []
 
 
 def test_recording_failure_keeps_completed_experiment_results(tmp_path, monkeypatch):
@@ -883,6 +885,7 @@ def test_recording_failure_keeps_completed_experiment_results(tmp_path, monkeypa
     monkeypatch.setattr(routes, "experiment_state", {
         "status": "idle", "run_rows": [], "progress_log": [],
         "visualization_run_id": "run_from_previous_experiment",
+        "visualization_run_ids": [],
     })
 
     routes._run_experiment_async("", "", 1)
@@ -892,9 +895,11 @@ def test_recording_failure_keeps_completed_experiment_results(tmp_path, monkeypa
     conn.close()
     assert stored["status"] == "completed"
     assert os.path.isfile(stored["results_path"])
-    assert "Visualization recording failed: recorder unavailable" in stored["progress_json"]
-    assert json.loads(stored["progress_json"])["visualization_run_id"] is None
+    progress = json.loads(stored["progress_json"])
+    assert any("Visualization recording failed" in line and "recorder unavailable" in line for line in progress["log"])
+    assert progress["visualization_run_ids"] == []
     assert routes.experiment_state["visualization_run_id"] is None
+    assert routes.experiment_state["visualization_run_ids"] == []
 
 
 def test_async_success_persists_visualization_run_and_route_discovery(tmp_path, monkeypatch):
@@ -954,10 +959,14 @@ def test_async_success_persists_visualization_run_and_route_discovery(tmp_path, 
     stored = conn.execute("SELECT progress_json FROM experiments WHERE id=1").fetchone()
     conn.close()
     progress = json.loads(stored["progress_json"])
-    visualization_run_id = progress["visualization_run_id"]
-    assert visualization_run_id
-    assert routes.experiment_state["visualization_run_id"] == visualization_run_id
-    assert create_app().test_client().get("/api/viz/runs").get_json()[0]["run_id"] == visualization_run_id
+    visualization_run_ids = progress["visualization_run_ids"]
+    assert len(visualization_run_ids) == 1
+    viz_run_id = visualization_run_ids[0]
+    assert viz_run_id.startswith("run_dashboard_1_0")
+    assert routes.experiment_state["visualization_run_ids"] == visualization_run_ids
+    assert routes.experiment_state["visualization_run_id"] == viz_run_id
+    all_runs = create_app().test_client().get("/api/viz/runs").get_json()
+    assert any(r["run_id"] == viz_run_id for r in all_runs)
 
 
 def test_app_startup_recovers_persisted_running_runs_as_stopped(tmp_path, monkeypatch):
@@ -1466,7 +1475,7 @@ def test_run_form_forwards_refresh_osm_only_for_city_runs(tmp_path, monkeypatch)
             "refresh_osm": "1",
         },
     )
-    assert started[0] == ("", "auction", 1, "osm_city", "penang", True)
+    assert started[0] == ("", "auction", 1, "osm_city", "penang", True, False)
 
     started.clear()
     routes.experiment_state["status"] = "idle"
@@ -1474,7 +1483,7 @@ def test_run_form_forwards_refresh_osm_only_for_city_runs(tmp_path, monkeypatch)
         "/run",
         data={"replications": "1", "simulation_type": "mesa", "refresh_osm": "1"},
     )
-    assert started[0] == ("", "auction", 1, "mesa", None, False)
+    assert started[0] == ("", "auction", 1, "mesa", None, False, False)
 
 
 def test_async_run_passes_refresh_osm_to_runner_batch(tmp_path, monkeypatch):
@@ -1541,3 +1550,255 @@ def test_async_run_passes_refresh_osm_to_runner_batch(tmp_path, monkeypatch):
 
     assert [batch["refresh_osm"] for batch in batches] == [True, False]
     assert [batch["city"] for batch in batches] == ["penang", None]
+
+
+def test_visualization_records_one_entry_per_combination(tmp_path, monkeypatch):
+    """A 2x2 experiment should produce 4 recordings, one per (scenario, strategy)."""
+    results = {
+        ("low_demand", "auction"): {
+            "scenario": "low_demand", "strategy": "auction", "replication": 0,
+            "total_arrivals": 0, "total_successful": 0, "total_failed": 0,
+            "mean_pst": 0, "std_por": 0, "rsr": 0,
+            "mean_utility": 0, "tfi": 0, "sumo_connected": False, "_timeseries": [],
+        },
+        ("low_demand", "fcfs"): {
+            "scenario": "low_demand", "strategy": "fcfs", "replication": 0,
+            "total_arrivals": 0, "total_successful": 0, "total_failed": 0,
+            "mean_pst": 0, "std_por": 0, "rsr": 0,
+            "mean_utility": 0, "tfi": 0, "sumo_connected": False, "_timeseries": [],
+        },
+        ("high_demand", "auction"): {
+            "scenario": "high_demand", "strategy": "auction", "replication": 0,
+            "total_arrivals": 0, "total_successful": 0, "total_failed": 0,
+            "mean_pst": 0, "std_por": 0, "rsr": 0,
+            "mean_utility": 0, "tfi": 0, "sumo_connected": False, "_timeseries": [],
+        },
+        ("high_demand", "fcfs"): {
+            "scenario": "high_demand", "strategy": "fcfs", "replication": 0,
+            "total_arrivals": 0, "total_successful": 0, "total_failed": 0,
+            "mean_pst": 0, "std_por": 0, "rsr": 0,
+            "mean_utility": 0, "tfi": 0, "sumo_connected": False, "_timeseries": [],
+        },
+    }
+
+    class FakeRunner:
+        base_config = {
+            "grid": {"width": 8, "height": 8, "cell_size_meters": 10},
+            "parking": {"num_spots": 4, "num_zones": 2, "price_range": [1, 10]},
+            "demand": {"arrival_rate_lambda": 0, "parking_duration_mean_ticks": 8,
+                       "parking_duration_std_ticks": 2, "search_radius_cells": 30,
+                       "max_search_duration_ticks": 6},
+            "simulation": {"total_ticks": 1, "warmup_ticks": 0, "random_seed": 42},
+            "strategy": "auction",
+        }
+        scenarios_config = {"scenarios": {}}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def run_batch(self, **kwargs):
+            callback = kwargs["progress_callback"]
+            for (scenario, strategy) in sorted(results):
+                callback(4, 4, scenario, strategy, 0, dict(results[(scenario, strategy)]))
+
+        def compute_summary(self, rows):
+            return [{"scenario": r["scenario"], "strategy": r["strategy"], "n_replications": 1} for r in rows]
+
+    class FakeAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+        def load_results(self, csv_file=None):
+            pass
+        def generate_all(self):
+            pass
+
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(tmp_path / "output" / "frames"))
+    monkeypatch.setattr(routes, "ExperimentRunner", FakeRunner)
+    monkeypatch.setattr(routes, "_load_current_outputs", lambda: ("global.csv", [], [], []))
+    import analysis
+    monkeypatch.setattr(analysis, "SimulationAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr(routes, "experiment_state", {"status": "idle", "run_rows": [], "progress_log": []})
+
+    record_calls = []
+
+    def fake_record(**kwargs):
+        run_id = f"run_dashboard_{kwargs.get('experiment_run_id')}_{kwargs.get('combo_index')}"
+        # Simulate writing the frame files
+        frames_dir = routes.VIZ_FRAMES_DIR
+        os.makedirs(frames_dir, exist_ok=True)
+        meta_path = os.path.join(frames_dir, f"{run_id}_meta.json")
+        frames_path = os.path.join(frames_dir, f"{run_id}_frames.json")
+        meta = {
+            "scenario": kwargs["scenario"],
+            "strategy": kwargs["strategy"],
+            "simulation_type": kwargs.get("simulation_type", "mesa"),
+            "dashboard_experiment_id": kwargs.get("experiment_run_id"),
+            "total_frames": 501,
+        }
+        if kwargs.get("city"):
+            meta["city"] = kwargs["city"]
+        with open(meta_path, "w") as f:
+            json.dump(meta, f)
+        with open(frames_path, "w") as f:
+            json.dump([{"t": 0}], f)
+        record_calls.append(kwargs)
+        return run_id
+
+    monkeypatch.setattr(routes, "_record_dashboard_experiment", fake_record)
+
+    routes._run_experiment_async("", "", 1)
+
+    assert len(record_calls) == 4
+    # Verify combos are sorted by (scenario, strategy)
+    ordered_combos = [(c["scenario"], c["strategy"]) for c in record_calls]
+    assert ordered_combos == [
+        ("high_demand", "auction"),
+        ("high_demand", "fcfs"),
+        ("low_demand", "auction"),
+        ("low_demand", "fcfs"),
+    ]
+    # Verify combo_index is sequential and zero-based
+    assert [c["combo_index"] for c in record_calls] == [0, 1, 2, 3]
+
+    conn = routes._get_db()
+    progress = json.loads(conn.execute("SELECT progress_json FROM experiments WHERE id=1").fetchone()["progress_json"])
+    conn.close()
+    assert len(progress["visualization_run_ids"]) == 4
+    assert progress["visualization_run_ids"] == [
+        "run_dashboard_1_0", "run_dashboard_1_1", "run_dashboard_1_2", "run_dashboard_1_3",
+    ]
+
+
+def test_recordings_are_grouped_by_experiment(tmp_path, monkeypatch):
+    """/api/viz/runs?experiment=<id> returns only that experiment's combo recordings."""
+    frames_dir = tmp_path / "output" / "frames"
+    frames_dir.mkdir(parents=True)
+    for exp_id, index in [(3, 0), (3, 1), (5, 0), (7, 0)]:
+        meta = {
+            "scenario": "s", "strategy": "st",
+            "total_frames": 501,
+            "dashboard_experiment_id": exp_id,
+        }
+        (frames_dir / f"run_dashboard_{exp_id}_{index}_meta.json").write_text(json.dumps(meta))
+        (frames_dir / f"run_dashboard_{exp_id}_{index}_frames.json").write_text("[]")
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(frames_dir))
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    # Register experiment IDs in the DB so they're not flagged as orphaned
+    conn = routes._get_db()
+    for eid in (3, 5, 7):
+        conn.execute("INSERT INTO experiments (id, run_at, status) VALUES (?, ?, 'completed')", (eid, "2026-01-01"))
+    conn.commit()
+    conn.close()
+
+    client = create_app().test_client()
+    filtered = client.get("/api/viz/runs?experiment=3").get_json()
+
+    assert len(filtered) == 2
+    assert all(r["meta"]["dashboard_experiment_id"] == 3 for r in filtered)
+
+
+def test_history_delete_cascades_all_combo_recordings_for_experiment(tmp_path, monkeypatch):
+    """Deleting an experiment run cascades to all of its combo recordings."""
+    frames_dir = tmp_path / "output" / "frames"
+    frames_dir.mkdir(parents=True)
+    for index in range(4):
+        (frames_dir / f"run_dashboard_7_{index}_meta.json").write_text("{}")
+        (frames_dir / f"run_dashboard_7_{index}_frames.json").write_text("[]")
+    # A collision suffix on one combo
+    (frames_dir / "run_dashboard_7_0_2_meta.json").write_text("{}")
+    (frames_dir / "run_dashboard_7_0_2_frames.json").write_text("[]")
+    # Unrelated recordings that must survive
+    (frames_dir / "run_dashboard_8_0_meta.json").write_text("{}")
+    (frames_dir / "run_dashboard_8_0_frames.json").write_text("[]")
+    (frames_dir / "run_dashboard_70_0_meta.json").write_text("{}")
+    (frames_dir / "run_dashboard_70_0_frames.json").write_text("[]")
+
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(frames_dir))
+
+    run_dir = tmp_path / "output" / "run_7"
+    run_dir.mkdir(parents=True)
+    (run_dir / "experiment_results.csv").write_text("scenario\nrun-7\n")
+    conn = routes._get_db()
+    conn.execute(
+        "INSERT INTO experiments (id, run_at, status, results_path) VALUES (?, ?, ?, ?)",
+        (7, "2026-08-30T08:00:00", "completed", str(run_dir / "experiment_results.csv")),
+    )
+    conn.commit()
+    conn.close()
+
+    response = create_app().test_client().post("/history/run/7/delete")
+    assert response.status_code == 302
+
+    remaining = sorted(os.listdir(frames_dir))
+    assert remaining == sorted([
+        "run_dashboard_70_0_meta.json",
+        "run_dashboard_70_0_frames.json",
+        "run_dashboard_8_0_meta.json",
+        "run_dashboard_8_0_frames.json",
+    ])
+
+
+def test_record_visualization_off_skips_recording(tmp_path, monkeypatch):
+    """When record_visualization is False, no recordings are created."""
+    result = {
+        "scenario": "low_demand", "strategy": "auction", "replication": 0,
+        "total_arrivals": 0, "total_successful": 0, "total_failed": 0,
+        "mean_pst": 0, "std_por": 0, "rsr": 0,
+        "mean_utility": 0, "tfi": 0, "sumo_connected": False, "_timeseries": [],
+    }
+
+    class FakeRunner:
+        base_config = {
+            "grid": {"width": 8, "height": 8, "cell_size_meters": 10},
+            "parking": {"num_spots": 4, "num_zones": 2, "price_range": [1, 10]},
+            "demand": {"arrival_rate_lambda": 0, "parking_duration_mean_ticks": 8,
+                       "parking_duration_std_ticks": 2, "search_radius_cells": 30,
+                       "max_search_duration_ticks": 6},
+            "simulation": {"total_ticks": 1, "warmup_ticks": 0, "random_seed": 42},
+            "strategy": "auction",
+        }
+        scenarios_config = {"scenarios": {}}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def run_batch(self, **kwargs):
+            kwargs["progress_callback"](1, 1, "low_demand", "auction", 0, result)
+
+        def compute_summary(self, rows):
+            return [{"scenario": "low_demand", "strategy": "auction", "n_replications": 1}]
+
+    class FakeAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+        def load_results(self, csv_file=None):
+            pass
+        def generate_all(self):
+            pass
+
+    monkeypatch.setattr(routes, "SIMULATION_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "DB_PATH", str(tmp_path / "experiments.sqlite"))
+    monkeypatch.setattr(routes, "VIZ_FRAMES_DIR", str(tmp_path / "output" / "frames"))
+    monkeypatch.setattr(routes, "ExperimentRunner", FakeRunner)
+    monkeypatch.setattr(routes, "_load_current_outputs", lambda: ("global.csv", [], [], []))
+    import analysis
+    monkeypatch.setattr(analysis, "SimulationAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr(routes, "experiment_state", {"status": "idle", "run_rows": [], "progress_log": []})
+
+    record_calls = []
+    monkeypatch.setattr(routes, "_record_dashboard_experiment", lambda **kw: record_calls.append(kw) or "fake_id")
+
+    routes._run_experiment_async("", "", 1, record_visualization=False)
+
+    assert record_calls == []
+    assert routes.experiment_state["visualization_run_ids"] == []
+    assert routes.experiment_state["visualization_run_id"] is None
+
+    conn = routes._get_db()
+    progress = json.loads(conn.execute("SELECT progress_json FROM experiments WHERE id=1").fetchone()["progress_json"])
+    conn.close()
+    assert progress["visualization_run_ids"] == []
