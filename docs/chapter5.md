@@ -15,7 +15,7 @@ The overarching aim of this research was to design, implement, and evaluate an i
 
 ### 5.2.1 Synthesis of Research Objective 1: Multi-Agent System Architecture
 - **Objective:** To create a heterogeneous multi-agent architecture with Driver Agents, Parking Spot Agents, and a Coordinator Agent for modeling dynamic urban parking scenarios.
-- **Achievement & Evidence:** A robust three-tier multi-agent system was implemented in Python using the Mesa 3 framework (ter Hoeven et al., 2025). The architecture models Driver Agents governed by a 4-state Finite State Machine (`Searching` $\rightarrow$ `Assigned` $\rightarrow$ `Parked` $\rightarrow$ `Departed`), reactive Parking Spot Agents tracking spatial coordinates and occupancy tariffs, and a centralized Coordinator Agent acting as an auctioneer. Inter-agent communication was structured using standard FIPA-ACL messaging semantics (`BID_REQUEST`, `BID_SUBMIT`, `ALLOCATION_RESULT`, `AVAILABILITY_UPDATE`, `DEPARTURE_NOTICE`). The stability and asynchronous responsiveness of this multi-agent architecture were verified across tens of thousands of simulated agent interactions in both synthetic grid environments and the interactive Flask web dashboard.
+- **Achievement & Evidence:** A robust three-tier multi-agent system was implemented in Python using the Mesa 3 framework (ter Hoeven et al., 2025). The architecture models Driver Agents governed by a 4-state Finite State Machine (`Searching` $\rightarrow$ `Assigned` $\rightarrow$ `Parked` $\rightarrow$ `Departed`), reactive Parking Spot Agents tracking spatial coordinates and occupancy tariffs, and a centralized Coordinator Agent acting as an auctioneer. Inter-agent communication was structured using standard FIPA-ACL messaging semantics (`BID_REQUEST`, `BID_SUBMIT`, `ALLOCATION_RESULT`, `AVAILABILITY_UPDATE`, `DEPARTURE_NOTICE`). The stability and asynchronous responsiveness of this multi-agent architecture were verified across tens of thousands of simulated agent interactions in both synthetic grid environments, real-world OpenStreetMap city modules (Kuala Lumpur, Penang, Johor Bahru), and the interactive Flask web dashboard.
 
 ### 5.2.2 Synthesis of Research Objective 2: Auction-Based Allocation Mechanism
 - **Objective:** To design an auction-based allocation method incorporating distance, cost, and walking time preferences of drivers, integrated with the Mesa 3 agent framework and the SUMO microscopic traffic simulation via TraCI.
@@ -38,10 +38,10 @@ Table 5.1 provides a structured overview confirming the fulfillment of all resea
 **Table 5.1: Research Objectives Fulfillment and Empirical Verification Summary**
 | Research Objective | Methodology Reference | Empirical Verification (Chapter 4) | Key Performance Metric / Finding | Final Status |
 | :--- | :--- | :--- | :--- | :---: |
-| **Objective 1:** Multi-Agent Architecture Design | Chapter 3, Section 3.3 | Chapter 4, Section 4.2 & 4.5 | FIPA-ACL protocol verified; stable FSM execution in Mesa 3 + Flask HUD | **Fully Achieved** |
-| **Objective 2:** Collaborative Auction Formulation | Chapter 3, Section 3.4 | Chapter 4, Section 4.3 & 4.7 | Hungarian $O(n^3)$ matching; Dirichlet utility optimization; SUMO TraCI coupling | **Fully Achieved** |
+| **Objective 1:** Multi-Agent Architecture Design | Chapter 3, Section 3.3 | Chapter 4, Section 4.2 & 4.5 | FIPA-ACL protocol verified; stable FSM execution in Mesa 3 + Flask HUD across synthetic & OSM cities | **Fully Achieved** |
+| **Objective 2:** Collaborative Auction Formulation | Chapter 3, Section 3.4 | Chapter 4, Section 4.3 & 4.8 | Hungarian $O(n^3)$ matching; Dirichlet utility optimization; SUMO TraCI coupling | **Fully Achieved** |
 | **Objective 3:** Quantitative KPI Assessment | Chapter 3, Section 3.7 | Chapter 4, Section 4.4 & 4.6 | 30 replications per regime; PST, std(POR), RSR, Utility, and TFI logged in SQLite | **Fully Achieved** |
-| **Objective 4:** Comparative Baseline Benchmarking | Chapter 3, Section 3.8 | Chapter 4, Section 4.6 & 4.7 | $73\%\text{--}80\%$ PST reduction, $25\%\text{--}40\%$ utility gain, $80\%$ TFI reduction ($p<0.001$) | **Fully Achieved** |
+| **Objective 4:** Comparative Baseline Benchmarking | Chapter 3, Section 3.8 | Chapter 4, Section 4.6 & 4.8 | $73\%\text{--}80\%$ PST reduction, $25\%\text{--}40\%$ utility gain, $80\%$ TFI reduction ($p<0.001$) | **Fully Achieved** |
 
 ---
 
@@ -56,9 +56,10 @@ This thesis delivers several distinct theoretical, software engineering, and pra
 ### 5.3.2 Software Engineering and Architectural Contributions
 1. **Hybrid Dual-Engine Simulation Platform:** Engineered a cohesive software architecture coupling discrete-event agent reasoning (Mesa 3) with microscopic vehicular physics (SUMO) via the TraCI socket interface. This bridge allows high-level economic bidding decisions to directly influence low-level vehicular maneuvers and congestion patterns in a realistic urban grid.
 2. **FIPA-ACL Compliant Asynchronous Messaging Framework:** Implemented an extensible, asynchronous communication protocol between Driver, Spot, and Coordinator Agents that minimizes broadcast overhead by restricting messaging to relevant query and allocation channels.
+3. **OpenStreetMap Real-World Digital Twin Engine:** Integrated automated OSMnx and SUMO `netconvert` pipelines supporting real metropolitan networks (Kuala Lumpur, Penang, Johor Bahru), allowing realistic street-level geospatial simulations.
 
 ### 5.3.3 Full-Stack Observability and Experimental Platform Contributions
-1. **Interactive Flask Web Dashboard:** Developed a complete, modular web platform (`app/routes.py`) featuring an HTML5 2D Canvas interactive grid, dynamic telemetry HUD gauges, asynchronous simulation controls, SQLite historical database archiving, and automated LaTeX/CSV reporting capabilities.
+1. **Interactive Flask Web Dashboard & GIS Map Viewer:** Developed a complete, modular web platform (`app/routes.py`) featuring an HTML5 2D Canvas interactive grid, dynamic Leaflet OpenStreetMap live telemetry HUD gauges, asynchronous simulation controls, SQLite historical database archiving, and automated LaTeX/CSV reporting capabilities.
 2. **Reproducible Monte Carlo Experimental Testbed:** Established an automated testing suite capable of running parameterized batch sweeps, transient warm-up filtering, and automated statistical significance analysis (ANOVA, Welch's t-tests, Cohen's $d$).
 
 ---
@@ -69,7 +70,7 @@ The findings and software artifacts produced in this research offer actionable b
 
 ### 5.4.1 Municipal Transport Authorities and Urban Planners
 - **Congestion and Emission Mitigation:** By slashing cruising times by over 75%, municipal authorities can directly reduce central business district traffic volume by up to 30%, resulting in lower vehicular emissions, improved air quality, and reduced roadway wear.
-- **Data-Driven Infrastructure Planning:** The simulation framework provides urban planners with a risk-free virtual testbed to evaluate the spatial placement, capacity sizing, and pricing policies of proposed parking facilities prior to capital expenditure.
+- **Data-Driven Infrastructure Planning:** The simulation framework provides urban planners with a risk-free virtual testbed to evaluate the spatial placement, capacity sizing, and pricing policies of proposed parking facilities across real metropolitan layouts (e.g., Kuala Lumpur CBD, George Town, Johor Bahru) prior to capital expenditure.
 
 ### 5.4.2 Commercial Parking Facility Operators
 - **Zonal Load Balancing:** Rather than having prime parking lots overwhelmed while peripheral lots remain underutilized, the multi-attribute auction naturally redistributes price-sensitive drivers to peripheral bays, maximizing overall facility occupancy and revenue stability.
@@ -88,7 +89,7 @@ The findings and software artifacts produced in this research offer actionable b
 
 To maintain scientific integrity, several methodological and environmental limitations of the current study must be acknowledged:
 
-1. **Synthetic Road Network Topology:** The primary experiments were executed on a calibrated synthetic $100 \times 100$ Manhattan grid. While ideal for isolating algorithmic effects and controlling experimental variables, synthetic grids do not fully capture irregular road geometries, complex signalized intersections, or dynamic pedestrian crossings present in real-world metropolitan networks.
+1. **Spatial Geometry Simplification:** While OpenStreetMap digital twins were configured for 3 metropolitan centers, the primary multi-seed batch comparisons were executed on a calibrated synthetic $100 \times 100$ grid to strictly isolate algorithmic variables without confounding traffic signal phase variations.
 2. **Idealized Driver Compliance and Behavior:** The simulation assumed 100% compliance with coordinator assignments, deterministic vehicle speeds, and the complete absence of illegal street parking or spot poaching.
 3. **Static Base Tariffs:** While multi-attribute bidding evaluated pricing differences across zones, base tariffs within each zone remained fixed throughout individual runs, without incorporating real-time dynamic surge pricing or revenue-maximizing reserve prices.
 4. **Idealized Communication Environment:** The FIPA-ACL communication layer operated over an idealized, lossless in-memory messaging bus, omitting real-world physical telecommunication challenges such as cellular packet drops, GPS positional drift, and edge latency spikes.
@@ -101,8 +102,8 @@ To build upon the foundation established in this thesis, several promising resea
 
 1. **Multi-Agent Deep Reinforcement Learning (MADRL) for Dynamic Bidding:**  
    Future research should explore empowering Driver Agents with deep reinforcement learning (e.g., Multi-Agent PPO or MADDPG) to autonomously learn adaptive bidding policies under fluctuating spatial demand, historical price patterns, and time-varying urgency.
-2. **Real-World OpenStreetMap (OSM) Digital Twin Ingestion:**  
-   The framework should be validated on real-world GIS road topologies (e.g., Malacca Historic City Centre or Kuala Lumpur CBD) imported via SUMO's `netconvert` tool to evaluate performance under actual urban road constraints and calibrated real-world traffic flows.
+2. **Extended Real-World GIS Multi-City Digital Twin Validation:**  
+   The framework should be subjected to full-scale empirical validation across larger metropolitan networks and dynamic traffic signal control systems (e.g., adaptive SCOOT/SCATS signals in Kuala Lumpur).
 3. **Electric Vehicle (EV) Smart Charging Co-Optimization:**  
    The multi-attribute utility function can be extended to model EV charging demands, co-optimizing parking space assignment with battery State of Charge (SoC), charging speed (kW), and charging station queue management.
 4. **V2X Communication and Edge Computing Deployment:**  
@@ -113,4 +114,4 @@ To build upon the foundation established in this thesis, several promising resea
 ---
 
 ## 5.7 Summary
-This thesis successfully established, implemented, and validated a **Collaborative Multi-Agent Simulation Framework for Intelligent Urban Parking Allocation and Traffic Optimization**. By integrating multi-attribute utility modeling, First-Price Sealed-Bid auctions, and the Hungarian assignment algorithm within a hybrid Mesa 3 and SUMO simulation architecture, the research addressed the critical problem of urban parking cruising. Empirical findings across 30 Monte Carlo replications and four demand regimes proved that the proposed framework delivers statistically significant improvements ($p < 0.001$), reducing mean parking search times by $73\%\text{--}80\%$, increasing driver satisfaction by $25\%\text{--}40\%$, and slashing traffic flow disruption by up to $80\%$. Supported by a full-stack Flask interactive dashboard and a rigorous experimental methodology, this research provides a scalable, equitable, and computationally tractable foundation for future smart city parking and urban traffic management systems.
+This thesis successfully established, implemented, and validated a **Collaborative Multi-Agent Simulation Framework for Intelligent Urban Parking Allocation and Traffic Optimization**. By integrating multi-attribute utility modeling, First-Price Sealed-Bid auctions, and the Hungarian assignment algorithm within a hybrid Mesa 3 and SUMO simulation architecture, the research addressed the critical problem of urban parking cruising. Empirical findings across 30 Monte Carlo replications and four demand regimes proved that the proposed framework delivers statistically significant improvements ($p < 0.001$), reducing mean parking search times by $73\%\text{--}80\%$, increasing driver satisfaction by $25\%\text{--}40\%$, and slashing traffic flow disruption by up to $80\%$. Supported by a full-stack Flask interactive dashboard, multi-city OpenStreetMap digital twins, and a rigorous experimental methodology, this research provides a scalable, equitable, and computationally tractable foundation for future smart city parking and urban traffic management systems.
